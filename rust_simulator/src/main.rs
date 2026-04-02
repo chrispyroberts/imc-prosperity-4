@@ -24,6 +24,10 @@ const TOMATOES_SECOND_TRADE_PROB: f64 = 1.0 / 819.0;
 const EMERALDS_TRADE_BUY_PROB: f64 = 195.0 / 399.0;
 const TOMATOES_TRADE_BUY_PROB: f64 = 387.0 / 820.0;
 const STRATEGY_RUN_TIMEOUT_MS: u64 = 900;
+const TOMATO_BOT3_BID_OFFSETS: [i32; 4] = [-2, -1, 0, 1];
+const TOMATO_BOT3_BID_OFFSET_WEIGHTS: [u32; 4] = [238, 220, 119, 117];
+const TOMATO_BOT3_ASK_OFFSETS: [i32; 4] = [-2, -1, 0, 1];
+const TOMATO_BOT3_ASK_OFFSET_WEIGHTS: [u32; 4] = [128, 102, 232, 221];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FvMode {
@@ -1692,23 +1696,37 @@ fn tomato_inner_quotes(latent_fair: f64) -> (i32, i32) {
 }
 
 fn tomato_bot3_bid_quote(latent_fair: f64, rng: &mut ChaCha8Rng) -> (i32, i32) {
-    let price = round_nearest(latent_fair + sample_tomato_bot3_offset(rng));
-    let size = rng.gen_range(2..=12);
+    let offset = sample_tomato_bot3_bid_offset(rng);
+    let price = round_nearest(latent_fair + offset as f64);
+    let size = if offset <= -1 {
+        rng.gen_range(2..=6)
+    } else {
+        rng.gen_range(5..=12)
+    };
     (price, size)
 }
 
 fn tomato_bot3_ask_quote(latent_fair: f64, rng: &mut ChaCha8Rng) -> (i32, i32) {
-    let price = round_nearest(latent_fair + sample_tomato_bot3_offset(rng));
-    let size = rng.gen_range(2..=12);
+    let offset = sample_tomato_bot3_ask_offset(rng);
+    let price = round_nearest(latent_fair + offset as f64);
+    let size = if offset <= -1 {
+        rng.gen_range(5..=12)
+    } else {
+        rng.gen_range(2..=6)
+    };
     (price, size)
 }
 
-fn sample_tomato_bot3_offset(rng: &mut ChaCha8Rng) -> f64 {
-    match rng.gen_range(0..3) {
-        0 => -1.0,
-        1 => 0.0,
-        _ => 1.0,
-    }
+fn sample_tomato_bot3_bid_offset(rng: &mut ChaCha8Rng) -> i32 {
+    let chooser =
+        WeightedIndex::new(TOMATO_BOT3_BID_OFFSET_WEIGHTS).expect("valid tomato bid offset weights");
+    TOMATO_BOT3_BID_OFFSETS[chooser.sample(rng)]
+}
+
+fn sample_tomato_bot3_ask_offset(rng: &mut ChaCha8Rng) -> i32 {
+    let chooser =
+        WeightedIndex::new(TOMATO_BOT3_ASK_OFFSET_WEIGHTS).expect("valid tomato ask offset weights");
+    TOMATO_BOT3_ASK_OFFSETS[chooser.sample(rng)]
 }
 
 fn round_nearest(value: f64) -> i32 {
