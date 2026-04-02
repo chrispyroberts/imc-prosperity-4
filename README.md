@@ -7,7 +7,7 @@ This repo gives you:
 - `prosperity4mcbt`: a drop-in Monte Carlo CLI for normal Prosperity Python traders
 - a local dashboard for PnL distributions, profitability, stability, and path bands
 - a legacy replay CLI for historical CSV playback
-- tutorial-round market-structure research for `EMERALDS` and `TOMATOES`
+- tutorial-round simulation models for `EMERALDS` and `TOMATOES`
 
 You do not need to rewrite your trader for Monte Carlo mode. If your file already exposes a normal `Trader.run(state)` method, it should run.
 
@@ -19,6 +19,17 @@ You do not need to rewrite your trader for Monte Carlo mode. If your file alread
 - Quick preset: `100` sessions, `10` saved path traces
 - Local Monte Carlo dashboard
 - Historical replay through the legacy compatibility CLI
+
+## Prerequisites
+
+You need:
+
+- Python `3.9+`
+- `uv`
+- Rust / Cargo
+- Node / npm
+
+Monte Carlo runs call the Rust simulator, and the dashboard is a local Vite frontend.
 
 ## 60-Second Start
 
@@ -71,6 +82,13 @@ http://127.0.0.1:5555/
 ```
 
 That works because the local visualizer proxies `/dashboard.json` and the related sidecar files to the local dashboard file server on port `8001`.
+
+If you just want a smoke test, run the bundled starter template unchanged:
+
+```bash
+source backtester/.venv/bin/activate
+prosperity4mcbt example_trader.py --quick --out tmp/example/dashboard.json
+```
 
 ## CLI Presets
 
@@ -187,11 +205,6 @@ The simulator parameters come from direct measurement of the tutorial files:
 - Bot 3 presence, side, and size from one-sided inside quotes
 - taker timing, side, and size from the trade logs
 
-The detailed research notes used to derive those parameters are kept in:
-
-- [bot_summary.md](bot_summary.md)
-- [bot_3_maybe_informed.md](bot_3_maybe_informed.md)
-
 ## Output Bundle
 
 A run writes:
@@ -293,7 +306,7 @@ prosperity4/
 ├── example_trader.py   # official IMC starter trader template
 ├── starter.py          # simple example strategy
 ├── test_algo.py        # simple local test strategy
-└── bot_*.md            # market-structure analysis notes
+└── docs/               # README screenshots
 ```
 
 ## Mark-to-Market

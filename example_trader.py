@@ -9,7 +9,11 @@ and TOMATOES (~5,000).
 Usage:
     cd prosperity4
     source backtester/.venv/bin/activate
+    prosperity4mcbt example_trader.py --quick
     prosperity3bt example_trader.py 0 --data data --print --no-out
+
+This file is intentionally left in the official starter shape, and
+`prosperity4mcbt` can run it unchanged.
 """
 
 from typing import List
