@@ -1,0 +1,64 @@
+[project]
+name = "prosperity4mcbt"
+description = "Monte Carlo backtester and research CLI for IMC Prosperity 4 algorithms"
+version = "0.0.0"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Christopher Berman"},
+    {name = "Jasper van Merle", email = "jaspervmerle@gmail.com"},
+]
+keywords = ["imc", "prosperity", "backtest", "backtester"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+requires-python = ">= 3.9"
+dependencies = [
+    "ipython>=8.18.1",
+    "jsonpickle>=4.0.2",
+    "orjson>=3.10.15",
+    "tqdm>=4.67.1",
+    "typer>=0.15.2",
+]
+
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+prosperity3bt = "prosperity3bt.__main__:main"
+prosperity4mcbt = "prosperity4mcbt.__main__:main"
+
+[project.urls]
+Repository = "https://github.com/chrispyroberts/imc-prosperity-4"
+Issues = "https://github.com/chrispyroberts/imc-prosperity-4/issues"
+Changelog = "https://github.com/chrispyroberts/imc-prosperity-4/releases"
+
+[tool.setuptools.packages.find]
+include = ["prosperity3bt", "prosperity3bt.*", "prosperity4mcbt", "prosperity4mcbt.*"]
+
+[tool.setuptools.package-data]
+prosperity3bt = ["resources/*/*.csv"]
+
+[tool.uv]
+dev-dependencies = [
+    "mypy>=1.15.0",
+    "ruff>=0.9.7",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+extend-select = ["I"]
+
+[tool.mypy]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "prosperity3bt.datamodel"
+ignore_errors = true
