@@ -884,6 +884,7 @@ def run_rust_monte_carlo(
     seed: int,
     python_bin: str,
     sample_sessions: int,
+    ticks_per_day: int = 10000,
 ) -> None:
     actual_dir = resolve_actual_dir(data_root)
     simulator_dir = rust_dir()
@@ -917,6 +918,8 @@ def run_rust_monte_carlo(
         str(sample_sessions),
         "--actual-dir",
         str(actual_dir.resolve()),
+        "--ticks-per-day",
+        str(ticks_per_day),
     ]
     env = {**os.environ, "PROSPERITY4MCBT_ROOT": str(project_root().resolve())}
     subprocess.run(cmd, cwd=simulator_dir, env=env, check=True)
@@ -933,6 +936,7 @@ def run_monte_carlo_mode(
     seed: int,
     python_bin: str,
     sample_sessions: int,
+    ticks_per_day: int = 10000,
 ) -> dict[str, Any]:
     output_dir = dashboard_path.parent
     if output_dir.exists():
@@ -957,6 +961,7 @@ def run_monte_carlo_mode(
         seed=seed,
         python_bin=python_bin,
         sample_sessions=sample_sessions,
+        ticks_per_day=ticks_per_day,
     )
 
     dashboard = build_dashboard(

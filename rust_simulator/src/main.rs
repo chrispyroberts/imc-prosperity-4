@@ -14,7 +14,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 const DAYS: [i32; 2] = [-2, -1];
 const PRODUCTS: [&str; 2] = ["EMERALDS", "TOMATOES"];
-const TICKS_PER_DAY: usize = 10_000;
+const DEFAULT_TICKS_PER_DAY: usize = 10_000;
 const TIMESTAMP_STEP: i32 = 100;
 const TOMATO_HALF_TIE_FLIP_PROB: f64 = 0.0005;
 const POSITION_LIMIT: i32 = 80;
@@ -24,10 +24,8 @@ const TOMATOES_SECOND_TRADE_PROB: f64 = 1.0 / 819.0;
 const EMERALDS_TRADE_BUY_PROB: f64 = 195.0 / 399.0;
 const TOMATOES_TRADE_BUY_PROB: f64 = 387.0 / 820.0;
 const STRATEGY_RUN_TIMEOUT_MS: u64 = 900;
-const TOMATO_BOT3_BID_OFFSETS: [i32; 4] = [-2, -1, 0, 1];
-const TOMATO_BOT3_BID_OFFSET_WEIGHTS: [u32; 4] = [238, 220, 119, 117];
-const TOMATO_BOT3_ASK_OFFSETS: [i32; 4] = [-2, -1, 0, 1];
-const TOMATO_BOT3_ASK_OFFSET_WEIGHTS: [u32; 4] = [128, 102, 232, 221];
+// Bot 3 offsets: 2/3 passive, 1/3 aggressive, 50/50 within each group
+// (old weighted offsets removed — calibration proved uniform with passive/aggressive structure)
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FvMode {
@@ -60,6 +58,7 @@ struct Config {
     python_bin: String,
     sessions: usize,
     write_session_limit: usize,
+    ticks_per_day: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -351,12 +350,13 @@ impl Config {
             actual_dir: PathBuf::from("../data/round0"),
             fv_mode: FvMode::Replay,
             trade_mode: TradeMode::ReplayTimes,
-            tomato_support: TomatoSupport::Quarter,
+            tomato_support: TomatoSupport::Continuous,
             seed: 20_260_401,
             strategy_path: None,
             python_bin: "python3".to_string(),
             sessions: 1,
             write_session_limit: 0,
+            ticks_per_day: DEFAULT_TICKS_PER_DAY,
         };
 
         let mut args = env::args().skip(1);
@@ -424,6 +424,13 @@ impl Config {
                         .parse()
                         .context("invalid --write-session-limit")?;
                 }
+                "--ticks-per-day" => {
+                    config.ticks_per_day = args
+                        .next()
+                        .context("missing value for --ticks-per-day")?
+                        .parse()
+                        .context("invalid --ticks-per-day")?;
+                }
                 other => bail!("unknown argument {}", other),
             }
         }
@@ -478,7 +485,7 @@ impl ReplayData {
             for day in DAYS {
                 let trades = load_trade_rows(&config.actual_dir, day)?;
                 for product in PRODUCTS {
-                    let mut counts = vec![0usize; TICKS_PER_DAY];
+                    let mut counts = vec![0usize; DEFAULT_TICKS_PER_DAY];
                     for trade in trades.iter().filter(|row| row.symbol == product) {
                         let index = usize::try_from(trade.timestamp / TIMESTAMP_STEP)
                             .context("negative timestamp while loading replay trades")?;
@@ -506,16 +513,16 @@ fn generate_day(day: i32, config: &Config, replay: &ReplayData) -> Result<DayOut
             .get(&day)
             .cloned()
             .context("missing replay tomato latent state estimate")?,
-        FvMode::Simulate => simulate_tomato_fair(day, config.tomato_support, &mut rng),
+        FvMode::Simulate => simulate_tomato_fair(day, config.tomato_support, config.ticks_per_day, &mut rng),
     };
 
     let emerald_trade_counts = trade_counts_for("EMERALDS", day, config, replay, &mut rng)?;
     let tomato_trade_counts = trade_counts_for("TOMATOES", day, config, replay, &mut rng)?;
 
-    let mut price_rows = Vec::with_capacity(TICKS_PER_DAY * PRODUCTS.len());
+    let mut price_rows = Vec::with_capacity(config.ticks_per_day * PRODUCTS.len());
     let mut trade_rows = Vec::new();
 
-    for tick in 0..TICKS_PER_DAY {
+    for tick in 0..config.ticks_per_day {
         let timestamp = (tick as i32) * TIMESTAMP_STEP;
         let emerald_book = make_emerald_book(&mut rng);
         let tomato_book = make_tomato_book(tomato_latent_state[tick], &mut rng);
@@ -718,7 +725,7 @@ fn run_backtest_session(
                 .get(&day)
                 .cloned()
                 .context("missing replay tomato latent state estimate")?,
-            FvMode::Simulate => simulate_tomato_fair(day, config.tomato_support, &mut rng),
+            FvMode::Simulate => simulate_tomato_fair(day, config.tomato_support, config.ticks_per_day, &mut rng),
         };
 
         let emerald_trade_counts = trade_counts_for("EMERALDS", day, config, replay, &mut rng)?;
@@ -736,14 +743,14 @@ fn run_backtest_session(
         let mut day_tomato_fit = RunningLinearFit::default();
         let mut day_step = 0usize;
         let mut price_rows = if capture_outputs {
-            Vec::with_capacity(TICKS_PER_DAY * PRODUCTS.len())
+            Vec::with_capacity(config.ticks_per_day * PRODUCTS.len())
         } else {
             Vec::new()
         };
         let mut trade_rows = Vec::new();
         let mut trace_rows = Vec::new();
 
-        for tick in 0..TICKS_PER_DAY {
+        for tick in 0..config.ticks_per_day {
             let timestamp = (tick as i32) * TIMESTAMP_STEP;
             let emerald_book = make_emerald_book(&mut rng);
             let tomato_book = make_tomato_book(tomato_latent_state[tick], &mut rng);
@@ -1516,11 +1523,11 @@ fn trade_counts_for(
             .get(&(day, product.to_string()))
             .cloned()
             .context("missing replay trade count series"),
-        TradeMode::Simulate => Ok(simulate_trade_counts(product, rng)),
+        TradeMode::Simulate => Ok(simulate_trade_counts(product, config.ticks_per_day, rng)),
     }
 }
 
-fn simulate_trade_counts(product: &str, rng: &mut ChaCha8Rng) -> Vec<usize> {
+fn simulate_trade_counts(product: &str, ticks: usize, rng: &mut ChaCha8Rng) -> Vec<usize> {
     let base_prob = if product == "EMERALDS" {
         EMERALDS_TRADE_ACTIVE_PROB
     } else {
@@ -1531,7 +1538,7 @@ fn simulate_trade_counts(product: &str, rng: &mut ChaCha8Rng) -> Vec<usize> {
     } else {
         0.0
     };
-    let mut counts = vec![0usize; TICKS_PER_DAY];
+    let mut counts = vec![0usize; ticks];
     for count in &mut counts {
         if rng.gen_bool(base_prob) {
             *count = 1;
@@ -1546,16 +1553,17 @@ fn simulate_trade_counts(product: &str, rng: &mut ChaCha8Rng) -> Vec<usize> {
 fn simulate_tomato_fair(
     day: i32,
     support: TomatoSupport,
+    ticks: usize,
     rng: &mut ChaCha8Rng,
 ) -> Vec<TomatoLatentState> {
     let start = if day == -1 { 5006.0 } else { 5000.0 };
-    let sigma = 0.55;
+    let sigma = 0.496;
     let mut states = vec![
         TomatoLatentState {
             fair: 0.0,
             half_tie_orientation: HalfTieOrientation::Inward,
         };
-        TICKS_PER_DAY
+        ticks
     ];
     let mut orientation = if rng.gen_bool(0.5) {
         HalfTieOrientation::Inward
@@ -1567,7 +1575,7 @@ fn simulate_tomato_fair(
         half_tie_orientation: orientation,
     };
 
-    for index in 1..TICKS_PER_DAY {
+    for index in 1..ticks {
         let step = sigma * sample_standard_normal(rng);
         if rng.gen_bool(TOMATO_HALF_TIE_FLIP_PROB) {
             orientation = orientation.flip();
@@ -1636,7 +1644,8 @@ fn make_tomato_book(latent_state: TomatoLatentState, rng: &mut ChaCha8Rng) -> Bo
     let (inner_bid, inner_ask) = tomato_inner_quotes(latent_state.fair);
     let draw: f64 = rng.gen_range(0.0..1.0);
 
-    if draw < 729.0 / 20_000.0 {
+    // Bot 3: 6.3% presence, 50/50 bid/ask
+    if draw < 0.063 / 2.0 {
         let (bot3_price, bot3_size) = tomato_bot3_bid_quote(latent_state.fair, rng);
         Book {
             bids: vec![
@@ -1646,7 +1655,7 @@ fn make_tomato_book(latent_state: TomatoLatentState, rng: &mut ChaCha8Rng) -> Bo
             ],
             asks: vec![(inner_ask, inner_size), (outer_ask, outer_size)],
         }
-    } else if draw < (729.0 + 714.0) / 20_000.0 {
+    } else if draw < 0.063 {
         let (bot3_price, bot3_size) = tomato_bot3_ask_quote(latent_state.fair, rng);
         Book {
             bids: vec![(inner_bid, inner_size), (outer_bid, outer_size)],
@@ -1682,23 +1691,26 @@ fn tomato_outer_quotes(latent_state: TomatoLatentState) -> (i32, i32) {
 }
 
 fn tomato_inner_quotes(latent_fair: f64) -> (i32, i32) {
-    let bid_target = latent_fair - 6.5;
-    let ask_target = latent_fair + 6.5;
-
-    if is_half_tie(bid_target) && is_half_tie(ask_target) {
-        // Outward tie handling at the exact center state yields (-7,+7).
-        // The nearby .25/.75 fair states then produce (-7,+6) and (-6,+7)
-        // via ordinary nearest rounding.
-        (round_down(bid_target), round_up(ask_target))
-    } else {
-        (round_nearest(bid_target), round_nearest(ask_target))
-    }
+    // Calibrated: bid rounds at frac=0.25, ask rounds at frac=0.75
+    // bid = floor(FV + 0.75) - 7
+    // ask = ceil(FV + 0.25) + 6
+    let bid = (latent_fair + 0.75).floor() as i32 - 7;
+    let ask = (latent_fair + 0.25).ceil() as i32 + 6;
+    (bid, ask)
 }
 
 fn tomato_bot3_bid_quote(latent_fair: f64, rng: &mut ChaCha8Rng) -> (i32, i32) {
-    let offset = sample_tomato_bot3_bid_offset(rng);
-    let price = round_nearest(latent_fair + offset as f64);
-    let size = if offset <= -1 {
+    // 2/3 passive (offset -2 or -1), 1/3 aggressive (offset 0 or +1)
+    // 50/50 within each group
+    let passive = rng.gen_bool(2.0 / 3.0);
+    let near = rng.gen_bool(0.5);
+    let offset = if passive {
+        if near { -1 } else { -2 }
+    } else {
+        if near { 0 } else { 1 }
+    };
+    let price = round_nearest(latent_fair) + offset;
+    let size = if passive {
         rng.gen_range(2..=6)
     } else {
         rng.gen_range(5..=12)
@@ -1707,26 +1719,22 @@ fn tomato_bot3_bid_quote(latent_fair: f64, rng: &mut ChaCha8Rng) -> (i32, i32) {
 }
 
 fn tomato_bot3_ask_quote(latent_fair: f64, rng: &mut ChaCha8Rng) -> (i32, i32) {
-    let offset = sample_tomato_bot3_ask_offset(rng);
-    let price = round_nearest(latent_fair + offset as f64);
-    let size = if offset <= -1 {
-        rng.gen_range(5..=12)
+    // 2/3 passive (offset 0 or +1), 1/3 aggressive (offset -2 or -1)
+    // 50/50 within each group
+    let passive = rng.gen_bool(2.0 / 3.0);
+    let near = rng.gen_bool(0.5);
+    let offset = if passive {
+        if near { 0 } else { 1 }
     } else {
+        if near { -1 } else { -2 }
+    };
+    let price = round_nearest(latent_fair) + offset;
+    let size = if passive {
         rng.gen_range(2..=6)
+    } else {
+        rng.gen_range(5..=12)
     };
     (price, size)
-}
-
-fn sample_tomato_bot3_bid_offset(rng: &mut ChaCha8Rng) -> i32 {
-    let chooser =
-        WeightedIndex::new(TOMATO_BOT3_BID_OFFSET_WEIGHTS).expect("valid tomato bid offset weights");
-    TOMATO_BOT3_BID_OFFSETS[chooser.sample(rng)]
-}
-
-fn sample_tomato_bot3_ask_offset(rng: &mut ChaCha8Rng) -> i32 {
-    let chooser =
-        WeightedIndex::new(TOMATO_BOT3_ASK_OFFSET_WEIGHTS).expect("valid tomato ask offset weights");
-    TOMATO_BOT3_ASK_OFFSETS[chooser.sample(rng)]
 }
 
 fn round_nearest(value: f64) -> i32 {

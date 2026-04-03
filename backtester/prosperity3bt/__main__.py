@@ -264,10 +264,11 @@ def monte_carlo_cli(
     sessions: Annotated[int, Option("--sessions", help="Number of Monte Carlo sessions to run.")] = 100,
     fv_mode: Annotated[str, Option("--fv-mode", help="Fair-value mode for the Rust simulator.")] = "simulate",
     trade_mode: Annotated[str, Option("--trade-mode", help="Trade-arrival mode for the Rust simulator.")] = "simulate",
-    tomato_support: Annotated[str, Option("--tomato-support", help="Latent fair support for tomatoes in simulate mode.")] = "quarter",
+    tomato_support: Annotated[str, Option("--tomato-support", help="Latent fair support for tomatoes in simulate mode.")] = "continuous",
     seed: Annotated[int, Option("--seed", help="RNG seed for the Rust simulator.")] = 20260401,
     python_bin: Annotated[str, Option("--python-bin", help="Python interpreter used for the strategy worker process.")] = sys.executable,
     sample_sessions: Annotated[int, Option("--sample-sessions", help="Number of sessions to persist with full path/trace data for dashboard charts.")] = 10,
+    ticks_per_day: Annotated[int, Option("--ticks-per-day", help="Number of ticks per simulated day (server=2000, training=10000).")] = 10000,
 ) -> None:
     if no_out:
         print("Error: Monte Carlo mode always writes a dashboard bundle, so --no-out is not supported")
@@ -296,6 +297,7 @@ def monte_carlo_cli(
         seed=seed,
         python_bin=python_bin,
         sample_sessions=sample_sessions,
+        ticks_per_day=ticks_per_day,
     )
 
     total_stats = dashboard["overall"]["totalPnl"]
