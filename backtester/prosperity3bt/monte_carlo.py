@@ -320,50 +320,87 @@ def svg_escape(value: str) -> str:
 
 
 
+def _col(row: dict, *keys: str, default: float = 0.0) -> float:
+    """Return float from first matching key; fall back to default."""
+    for k in keys:
+        if k in row:
+            v = row[k]
+            return float(v) if v not in ("", None) else default
+    return default
+
+
+def _icol(row: dict, *keys: str, default: int = 0) -> int:
+    """Return int from first matching key; fall back to default."""
+    for k in keys:
+        if k in row:
+            v = row[k]
+            return int(v) if v not in ("", None) else default
+    return default
+
+
+def _detect_product_names(row: dict[str, str]) -> list[str]:
+    """Detect product names from CSV row keys by finding {NAME}_pnl columns."""
+    names = []
+    for key in row:
+        if key.endswith("_pnl") and not key.startswith("total"):
+            names.append(key[: -len("_pnl")])
+    return sorted(names)
+
+
 def load_session_summaries(output_dir: Path) -> list[dict[str, Any]]:
     rows = read_csv_dicts(output_dir / "session_summary.csv", ",")
     parsed = []
+    product_names: list[str] = _detect_product_names(rows[0]) if rows else []
     for row in rows:
-        parsed.append(
-            {
-                "sessionId": int(row["session_id"]),
-                "totalPnl": float(row["total_pnl"]),
-                "emeraldPnl": float(row["emerald_pnl"]),
-                "tomatoPnl": float(row["tomato_pnl"]),
-                "emeraldPosition": int(row["emerald_position"]),
-                "tomatoPosition": int(row["tomato_position"]),
-                "emeraldCash": float(row["emerald_cash"]),
-                "tomatoCash": float(row["tomato_cash"]),
-                "totalSlopePerStep": float(row.get("total_slope_per_step", 0.0) or 0.0),
-                "totalR2": float(row.get("total_r2", 0.0) or 0.0),
-                "emeraldSlopePerStep": float(row.get("emerald_slope_per_step", 0.0) or 0.0),
-                "emeraldR2": float(row.get("emerald_r2", 0.0) or 0.0),
-                "tomatoSlopePerStep": float(row.get("tomato_slope_per_step", 0.0) or 0.0),
-                "tomatoR2": float(row.get("tomato_r2", 0.0) or 0.0),
-            }
-        )
+        entry: dict[str, Any] = {
+            "sessionId": int(row["session_id"]),
+            "totalPnl": float(row["total_pnl"]),
+            "emeraldPnl": _col(row, "EMERALDS_pnl", "emerald_pnl"),
+            "tomatoPnl": _col(row, "TOMATOES_pnl", "tomato_pnl"),
+            "emeraldPosition": _icol(row, "EMERALDS_position", "emerald_position"),
+            "tomatoPosition": _icol(row, "TOMATOES_position", "tomato_position"),
+            "emeraldCash": _col(row, "EMERALDS_cash", "emerald_cash"),
+            "tomatoCash": _col(row, "TOMATOES_cash", "tomato_cash"),
+            "totalSlopePerStep": _col(row, "total_slope_per_step"),
+            "totalR2": _col(row, "total_r2"),
+            "emeraldSlopePerStep": _col(row, "EMERALDS_slope_per_step", "emerald_slope_per_step"),
+            "emeraldR2": _col(row, "EMERALDS_r2", "emerald_r2"),
+            "tomatoSlopePerStep": _col(row, "TOMATOES_slope_per_step", "tomato_slope_per_step"),
+            "tomatoR2": _col(row, "TOMATOES_r2", "tomato_r2"),
+            # dynamic per-product dicts for frontend iteration
+            "perProductPnl": {n: _col(row, f"{n}_pnl") for n in product_names},
+            "perProductPosition": {n: _icol(row, f"{n}_position") for n in product_names},
+            "perProductCash": {n: _col(row, f"{n}_cash") for n in product_names},
+            "perProductSlopePerStep": {n: _col(row, f"{n}_slope_per_step") for n in product_names},
+            "perProductR2": {n: _col(row, f"{n}_r2") for n in product_names},
+        }
+        parsed.append(entry)
     return parsed
 
 
 def load_run_summaries(output_dir: Path) -> list[dict[str, Any]]:
     rows = read_csv_dicts(output_dir / "run_summary.csv", ",")
     parsed = []
+    product_names: list[str] = _detect_product_names(rows[0]) if rows else []
     for row in rows:
-        parsed.append(
-            {
-                "sessionId": int(row["session_id"]),
-                "day": int(row["day"]),
-                "totalPnl": float(row["total_pnl"]),
-                "emeraldPnl": float(row["emerald_pnl"]),
-                "tomatoPnl": float(row["tomato_pnl"]),
-                "totalSlopePerStep": float(row.get("total_slope_per_step", 0.0) or 0.0),
-                "totalR2": float(row.get("total_r2", 0.0) or 0.0),
-                "emeraldSlopePerStep": float(row.get("emerald_slope_per_step", 0.0) or 0.0),
-                "emeraldR2": float(row.get("emerald_r2", 0.0) or 0.0),
-                "tomatoSlopePerStep": float(row.get("tomato_slope_per_step", 0.0) or 0.0),
-                "tomatoR2": float(row.get("tomato_r2", 0.0) or 0.0),
-            }
-        )
+        entry: dict[str, Any] = {
+            "sessionId": int(row["session_id"]),
+            "day": int(row["day"]),
+            "totalPnl": float(row["total_pnl"]),
+            "emeraldPnl": _col(row, "EMERALDS_pnl", "emerald_pnl"),
+            "tomatoPnl": _col(row, "TOMATOES_pnl", "tomato_pnl"),
+            "totalSlopePerStep": _col(row, "total_slope_per_step"),
+            "totalR2": _col(row, "total_r2"),
+            "emeraldSlopePerStep": _col(row, "EMERALDS_slope_per_step", "emerald_slope_per_step"),
+            "emeraldR2": _col(row, "EMERALDS_r2", "emerald_r2"),
+            "tomatoSlopePerStep": _col(row, "TOMATOES_slope_per_step", "tomato_slope_per_step"),
+            "tomatoR2": _col(row, "TOMATOES_r2", "tomato_r2"),
+            # dynamic per-product dicts
+            "perProductPnl": {n: _col(row, f"{n}_pnl") for n in product_names},
+            "perProductSlopePerStep": {n: _col(row, f"{n}_slope_per_step") for n in product_names},
+            "perProductR2": {n: _col(row, f"{n}_r2") for n in product_names},
+        }
+        parsed.append(entry)
     return parsed
 
 
@@ -726,6 +763,54 @@ def build_band_series(sampled_paths: list[dict[str, Any]]) -> dict[str, dict[str
     }
 
 
+def _compute_fv_bands(
+    sampled_paths: list[dict[str, Any]],
+    product_names: list[str],
+) -> dict[str, dict[str, list[float]]]:
+    """compute p05/p50/p95 FV bands per product across sample sessions."""
+    result: dict[str, dict[str, list[float]]] = {}
+    for product in product_names:
+        paths_with_product = [p for p in sampled_paths if product in p.get("products", {})]
+        if not paths_with_product:
+            continue
+        base = paths_with_product[0]["products"][product]["fair"]
+        indices = downsample_indices(len(base), STATIC_CHART_POINTS)
+        timestamps = [paths_with_product[0]["total"]["timestamps"][i] for i in indices]
+        band_p05: list[float] = []
+        band_p50: list[float] = []
+        band_p95: list[float] = []
+        for i in indices:
+            vals = [p["products"][product]["fair"][i] for p in paths_with_product]
+            band_p05.append(quantile(vals, 0.05))
+            band_p50.append(quantile(vals, 0.50))
+            band_p95.append(quantile(vals, 0.95))
+        result[product] = {
+            "timestamps": timestamps,
+            "band_p05": band_p05,
+            "band_p50": band_p50,
+            "band_p95": band_p95,
+        }
+    return result
+
+
+def _load_observed_fv(product_names: list[str]) -> dict[str, dict[str, list[float]]]:
+    """load observed day-0 FV from calibration data files if present."""
+    data_dir = project_root() / "calibration" / "round1" / "data"
+    observed: dict[str, dict[str, list[float]]] = {}
+    for product in product_names:
+        slug = product.lower().replace(" ", "_")
+        path = data_dir / f"fv_and_book_{slug}.json"
+        if not path.exists():
+            continue
+        fb = json.loads(path.read_text(encoding="utf-8"))
+        ticks = fb.get("ticks", [])
+        observed[product] = {
+            "timestamps": [t["timestamp"] for t in ticks],
+            "fv": [t["fv"] for t in ticks],
+        }
+    return observed
+
+
 def build_dashboard(output_dir: Path, algorithm: Path, sessions: int, config: dict[str, Any]) -> dict[str, Any]:
     session_rows = load_session_summaries(output_dir)
     run_rows = load_run_summaries(output_dir)
@@ -749,10 +834,15 @@ def build_dashboard(output_dir: Path, algorithm: Path, sessions: int, config: di
     session_tomato_profitability = [row["tomatoSlopePerStep"] for row in session_rows]
     session_tomato_stability = [row["tomatoR2"] for row in session_rows]
 
+    # detect product names dynamically from session rows
+    product_names: list[str] = sorted(session_rows[0].get("perProductPnl", {}).keys()) if session_rows else []
+
     sample_session_dirs = sorted((output_dir / "sessions").glob("session_*")) if (output_dir / "sessions").exists() else []
     sample_path_refs, sampled_paths = write_sample_path_sidecars(output_dir, sample_session_dirs) if sample_session_dirs else ([], [])
     band_chart_refs = write_static_chart_svgs(output_dir, sampled_paths) if sampled_paths else {}
     band_series = build_band_series(sampled_paths) if sampled_paths else {}
+    per_product_fv_bands = _compute_fv_bands(sampled_paths, product_names) if sampled_paths else {}
+    per_product_observed_fv = _load_observed_fv(product_names)
 
     runs_by_session: dict[int, list[dict[str, Any]]] = {}
     for run in run_rows:
@@ -773,6 +863,51 @@ def build_dashboard(output_dir: Path, algorithm: Path, sessions: int, config: di
     emerald_normal_fit = normal_fit(emerald)
     tomato_normal_fit = normal_fit(tomato)
 
+    # per-product histogram and normal-fit dicts keyed by product name
+    per_product_pnl_lists = {
+        n: [row["perProductPnl"].get(n, 0.0) for row in session_rows] for n in product_names
+    }
+    per_product_profitability_lists = {
+        n: [row["perProductSlopePerStep"].get(n, 0.0) for row in run_rows] for n in product_names
+    }
+    per_product_stability_lists = {
+        n: [row["perProductR2"].get(n, 0.0) for row in run_rows] for n in product_names
+    }
+    per_product_histograms = {
+        n: {
+            "pnl": histogram(per_product_pnl_lists[n]),
+            "profitability": histogram(per_product_profitability_lists[n]),
+            "stability": histogram(per_product_stability_lists[n]),
+        }
+        for n in product_names
+    }
+    per_product_normal_fits = {
+        n: normal_fit(per_product_pnl_lists[n]) for n in product_names
+    }
+    per_product_trend_fits = {
+        n: {
+            "profitability": summarize_distribution(per_product_profitability_lists[n]),
+            "stability": summarize_distribution(per_product_stability_lists[n]),
+        }
+        for n in product_names
+    }
+
+    # per-product stats for products dict (dynamic, replaces hardcoded EMERALDS/TOMATOES)
+    per_product_position_lists = {
+        n: [float(row["perProductPosition"].get(n, 0)) for row in session_rows] for n in product_names
+    }
+    per_product_cash_lists = {
+        n: [row["perProductCash"].get(n, 0.0) for row in session_rows] for n in product_names
+    }
+    products_stats = {
+        n: {
+            "pnl": summarize_distribution(per_product_pnl_lists[n]),
+            "finalPosition": summarize_distribution(per_product_position_lists[n]),
+            "cash": summarize_distribution(per_product_cash_lists[n]),
+        }
+        for n in product_names
+    }
+
     return {
         "kind": "monte_carlo_dashboard",
         "meta": {
@@ -781,6 +916,7 @@ def build_dashboard(output_dir: Path, algorithm: Path, sessions: int, config: di
             "bandSessionCount": len(sample_session_dirs),
             **config,
         },
+        "productNames": product_names,
         "overall": {
             "totalPnl": summarize_distribution(total),
             "emeraldPnl": summarize_distribution(emerald),
@@ -800,6 +936,7 @@ def build_dashboard(output_dir: Path, algorithm: Path, sessions: int, config: di
                 "profitability": summarize_distribution(tomato_profitability),
                 "stability": summarize_distribution(tomato_stability),
             },
+            **per_product_trend_fits,
         },
         "aggregateTrendFits": {
             "TOTAL": {
@@ -839,18 +976,9 @@ def build_dashboard(output_dir: Path, algorithm: Path, sessions: int, config: di
                 ],
             },
         },
-        "products": {
-            "EMERALDS": {
-                "pnl": summarize_distribution(emerald),
-                "finalPosition": summarize_distribution([float(value) for value in emerald_pos]),
-                "cash": summarize_distribution(emerald_cash),
-            },
-            "TOMATOES": {
-                "pnl": summarize_distribution(tomato),
-                "finalPosition": summarize_distribution([float(value) for value in tomato_pos]),
-                "cash": summarize_distribution(tomato_cash),
-            },
-        },
+        "products": products_stats,
+        "perProductHistograms": per_product_histograms,
+        "perProductNormalFits": per_product_normal_fits,
         "histograms": {
             "totalPnl": histogram(total),
             "emeraldPnl": histogram(emerald),
@@ -870,6 +998,8 @@ def build_dashboard(output_dir: Path, algorithm: Path, sessions: int, config: di
         "samplePathRefs": sample_path_refs,
         "bandChartRefs": band_chart_refs,
         "bandSeries": band_series,
+        "perProductFvBands": per_product_fv_bands,
+        "perProductObservedFv": per_product_observed_fv,
     }
 
 
@@ -908,8 +1038,6 @@ def run_rust_monte_carlo(
         fv_mode,
         "--trade-mode",
         trade_mode,
-        "--tomato-support",
-        tomato_support,
         "--seed",
         str(seed),
         "--python-bin",

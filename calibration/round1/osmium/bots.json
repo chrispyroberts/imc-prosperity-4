@@ -1,0 +1,31 @@
+{
+  "bot1": {
+    "bid_rule": "floor_fv_minus_offset",
+    "ask_rule": "ceil_fv_plus_offset",
+    "offset": 10,
+    "volume_lo": 20,
+    "volume_hi": 30,
+    "presence_rate": 1.0
+  },
+  "bot2": {
+    "bid_rule": "round_fv_minus_offset",
+    "ask_rule": "round_fv_plus_offset",
+    "offset": 8,
+    "volume_lo": 10,
+    "volume_hi": 15,
+    "presence_rate": 0.946
+  },
+  "bot3": {
+    "presence_rate_beta": [78, 922],
+    "side_bid_prob": 0.506,
+    "price_delta_support": [-3, -2, 0, 1, 2],
+    "price_delta_weights": [0.228, 0.203, 0.013, 0.228, 0.329],
+    "crossing_volume": [4, 10],
+    "passive_volume": [1, 6]
+  },
+  "taker": {
+    "trade_active_beta": [1266, 28736],
+    "second_trade_beta": [64, 1138],
+    "buy_prob_beta": [1, 1]
+  }
+}

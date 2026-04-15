@@ -170,6 +170,9 @@ export interface MonteCarloRunSummary {
   emeraldR2: number;
   tomatoSlopePerStep: number;
   tomatoR2: number;
+  perProductPnl?: Record<string, number>;
+  perProductSlopePerStep?: Record<string, number>;
+  perProductR2?: Record<string, number>;
 }
 
 export interface MonteCarloBandSeries {
@@ -198,6 +201,11 @@ export interface MonteCarloSessionSummary {
   tomatoR2: number;
   runMeanTotalSlopePerStep?: number;
   runMeanTotalR2?: number;
+  perProductPnl?: Record<string, number>;
+  perProductPosition?: Record<string, number>;
+  perProductCash?: Record<string, number>;
+  perProductSlopePerStep?: Record<string, number>;
+  perProductR2?: Record<string, number>;
 }
 
 export interface MonteCarloSampleProductPath {
@@ -236,6 +244,36 @@ export interface MonteCarloGeneratorModel {
   notes: string[];
 }
 
+export interface MonteCarloProductHistograms {
+  pnl: MonteCarloHistogram;
+  profitability: MonteCarloHistogram;
+  stability: MonteCarloHistogram;
+}
+
+export interface DroReportSession {
+  session_id: number;
+  nominal_total_pnl: number;
+  worst_total_pnl: number;
+  per_product_nominal_pnl: Record<string, number>;
+  per_product_worst_pnl: Record<string, number>;
+}
+
+export interface DroReport {
+  radius: number;
+  k: number;
+  nominal_mean_pnl: number;
+  worst_case_mean_pnl: number;
+  worst_case_p05_pnl: number;
+  per_product_nominal_mean: Record<string, number>;
+  per_product_worst_mean: Record<string, number>;
+  sessions: DroReportSession[];
+}
+
+export interface PositionPath {
+  timestamps: number[];
+  position: number[];
+}
+
 export interface MonteCarloDashboard {
   kind: 'monte_carlo_dashboard';
   meta: {
@@ -248,6 +286,7 @@ export interface MonteCarloDashboard {
     sampleSessions: number;
     bandSessionCount?: number;
   };
+  productNames?: string[];
   overall: {
     totalPnl: MonteCarloDistributionStats;
     emeraldPnl: MonteCarloDistributionStats;
@@ -271,6 +310,8 @@ export interface MonteCarloDashboard {
       cash: MonteCarloDistributionStats;
     }
   >;
+  perProductHistograms?: Record<string, MonteCarloProductHistograms>;
+  perProductNormalFits?: Record<string, MonteCarloNormalFit>;
   histograms: Record<string, MonteCarloHistogram>;
   sessions: MonteCarloSessionSummary[];
   runs?: MonteCarloRunSummary[];
@@ -280,6 +321,10 @@ export interface MonteCarloDashboard {
   samplePathRefs?: MonteCarloSamplePathRef[];
   bandChartRefs?: Record<string, MonteCarloStaticChartRef[]>;
   bandSeries?: Record<string, Record<string, MonteCarloBandSeries>>;
+  perProductFvBands?: Record<string, { timestamps: number[]; band_p05: number[]; band_p50: number[]; band_p95: number[] }>;
+  perProductObservedFv?: Record<string, { timestamps: number[]; fv: number[] }>;
+  perProductPositionPaths?: Record<string, PositionPath[]>;
+  droReport?: DroReport;
 }
 
 export type CompressedListing = [symbol: ProsperitySymbol, product: Product, denomination: Product];

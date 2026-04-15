@@ -311,10 +311,16 @@ export function SummaryTable({ title, stats }: { title: string; stats: MonteCarl
 export function SessionRankingTable({
   title,
   rows,
+  productNames,
 }: {
   title: string;
   rows: MonteCarloDashboard['sessions'];
+  productNames?: string[];
 }): ReactNode {
+  // use dynamic product names if available; fall back to legacy emerald/tomato fields
+  const products = productNames ?? ['EMERALDS', 'TOMATOES'];
+  const hasPerProduct = rows.length > 0 && rows[0].perProductPnl !== undefined;
+
   return (
     <VisualizerCard title={title}>
       <Table striped withTableBorder withColumnBorders stickyHeader stickyHeaderOffset={0}>
@@ -322,8 +328,9 @@ export function SessionRankingTable({
           <Table.Tr>
             <Table.Th>Session</Table.Th>
             <Table.Th>Total</Table.Th>
-            <Table.Th>EMERALDS</Table.Th>
-            <Table.Th>TOMATOES</Table.Th>
+            {products.map(name => (
+              <Table.Th key={name}>{name}</Table.Th>
+            ))}
             <Table.Th>Total $/step</Table.Th>
             <Table.Th>Total R²</Table.Th>
           </Table.Tr>
@@ -333,8 +340,14 @@ export function SessionRankingTable({
             <Table.Tr key={`${title}-${row.sessionId}`}>
               <Table.Td>{row.sessionId}</Table.Td>
               <Table.Td>{formatNumber(row.totalPnl, 2)}</Table.Td>
-              <Table.Td>{formatNumber(row.emeraldPnl, 2)}</Table.Td>
-              <Table.Td>{formatNumber(row.tomatoPnl, 2)}</Table.Td>
+              {hasPerProduct
+                ? products.map(name => (
+                    <Table.Td key={name}>{formatNumber(row.perProductPnl?.[name] ?? 0, 2)}</Table.Td>
+                  ))
+                : [
+                    <Table.Td key="emerald">{formatNumber(row.emeraldPnl, 2)}</Table.Td>,
+                    <Table.Td key="tomato">{formatNumber(row.tomatoPnl, 2)}</Table.Td>,
+                  ]}
               <Table.Td>{formatNumber(row.runMeanTotalSlopePerStep ?? row.totalSlopePerStep, 4)}</Table.Td>
               <Table.Td>{formatNumber(row.runMeanTotalR2 ?? row.totalR2, 3)}</Table.Td>
             </Table.Tr>

@@ -43,7 +43,14 @@ uv pip install -e .
 cd ..
 ```
 
-Run a quick Monte Carlo sweep:
+Run a quick Monte Carlo sweep (tutorial round):
+
+```bash
+source backtester/.venv/bin/activate
+prosperity4mcbt your_trader.py --quick --config configs/tutorial.toml --out tmp/your_run/dashboard.json
+```
+
+Or omit `--config` to use the default tutorial:
 
 ```bash
 source backtester/.venv/bin/activate
@@ -353,6 +360,103 @@ Do not commit:
 
 Local auth tokens live outside the repo in `~/.prosperity4mcbt/`.
 
+## Round 1
+
+Round 1 products are `ASH_COATED_OSMIUM` and `INTARIAN_PEPPER_ROOT`. The backtester is now fully config-driven: all product definitions (fair-value process, bot quoting rules, taker flow, posterior distributions) live in `configs/round1.toml`.
+
+### Quick Start
+
+```bash
+source backtester/.venv/bin/activate
+prosperity4mcbt your_trader.py --round 1 --quick --out tmp/your_run/dashboard.json
+```
+
+### Commands
+
+Quick run (100 sessions, 10 traces):
+
+```bash
+prosperity4mcbt your_trader.py --round 1 --quick
+```
+
+Heavy run (1000 sessions, 100 traces):
+
+```bash
+prosperity4mcbt your_trader.py --round 1 --heavy
+```
+
+Distributionally robust optimization (DRO) evaluation with worst-case PnL:
+
+```bash
+prosperity4mcbt your_trader.py --round 1 --heavy --dro
+```
+
+Fixed-parameter baseline (no posterior sampling; uses point estimates from calibration):
+
+```bash
+prosperity4mcbt your_trader.py --round 1 --quick --fixed-params
+```
+
+### Flags
+
+- `--round 1` selects the round 1 product config.
+- `--dro` samples adversarial parameters from a widened posterior and reports worst-case PnL across sampled sessions.
+- `--dro-radius FLOAT` controls the widening scale (default 1.5x covariance).
+- `--dro-k INT` controls the number of sampled adversarial parameter sets (default 3).
+- `--fixed-params` disables posterior sampling; uses the point estimates from calibration.
+
+### Calibration Artifacts
+
+All calibration data, scripts, and results live in `calibration/round1/{osmium,pepper}/`:
+
+- `bot{1,2,3}_calibration.md` - per-bot calibration results
+- `fv_process_calibration.md` - fair-value process fit
+- `fv_process_fit.json` - posterior distribution for resampling
+- `bots.json` - consolidated per-bot parameters
+
+### Regenerating round1.toml
+
+If you need to re-run the calibration pipeline from scratch (e.g., with new data):
+
+Extract FV and order book from a hold-1 submission:
+
+```bash
+uv run python -m calibration.round1.scripts.extract_fv_and_book \
+    calibration/round1/data/submission_<id>.json \
+    --out calibration/round1/data --products ASH_COATED_OSMIUM INTARIAN_PEPPER_ROOT
+```
+
+Analyze bots and fit fair-value processes per product:
+
+```bash
+uv run python -m calibration.round1.osmium.scripts.analyze_bot1
+uv run python -m calibration.round1.osmium.scripts.analyze_bot2
+uv run python -m calibration.round1.osmium.scripts.analyze_bot3
+uv run python -m calibration.round1.osmium.scripts.fit_fv_process
+
+uv run python -m calibration.round1.pepper.scripts.analyze_bot1
+uv run python -m calibration.round1.pepper.scripts.analyze_bot2
+uv run python -m calibration.round1.pepper.scripts.analyze_bot3
+uv run python -m calibration.round1.pepper.scripts.fit_fv_process
+```
+
+Emit the consolidated config:
+
+```bash
+uv run python -m calibration.round1.scripts.emit_config \
+    --osmium-fit calibration/round1/osmium/fv_process_fit.json \
+    --osmium-bots calibration/round1/osmium/bots.json \
+    --pepper-fit calibration/round1/pepper/fv_process_fit.json \
+    --pepper-bots calibration/round1/pepper/bots.json \
+    --out configs/round1.toml
+```
+
+Run the regression test to verify the new config against known calibration results:
+
+```bash
+bash scripts/run_calibration_regression.sh
+```
+
 ## Status
 
-This repo is tuned for tutorial-round research and fast local experimentation. The Monte Carlo simulator is intended for strategy comparison and robustness testing, not as a claim of exact official-market reconstruction.
+This repo is tuned for tutorial-round and round-1 research and fast local experimentation. The Monte Carlo simulator is intended for strategy comparison and robustness testing, not as a claim of exact official-market reconstruction.

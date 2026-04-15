@@ -13,23 +13,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 pub mod config;
+pub mod dro;
 mod posterior;
 mod products;
 
 const DAYS: [i32; 2] = [-2, -1];
-const PRODUCTS: [&str; 2] = ["EMERALDS", "TOMATOES"];
 const DEFAULT_TICKS_PER_DAY: usize = 10_000;
 const TIMESTAMP_STEP: i32 = 100;
-const TOMATO_HALF_TIE_FLIP_PROB: f64 = 0.0005;
-const POSITION_LIMIT: i32 = 80;
-const EMERALDS_TRADE_ACTIVE_PROB: f64 = 399.0 / 20_000.0;
-const TOMATOES_TRADE_ACTIVE_PROB: f64 = 819.0 / 20_000.0;
-const TOMATOES_SECOND_TRADE_PROB: f64 = 1.0 / 819.0;
-const EMERALDS_TRADE_BUY_PROB: f64 = 195.0 / 399.0;
-const TOMATOES_TRADE_BUY_PROB: f64 = 387.0 / 820.0;
 const STRATEGY_RUN_TIMEOUT_MS: u64 = 900;
-// Bot 3 offsets: 2/3 passive, 1/3 aggressive, 50/50 within each group
-// (old weighted offsets removed — calibration proved uniform with passive/aggressive structure)
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FvMode {
@@ -43,53 +34,29 @@ enum TradeMode {
     Simulate,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TomatoSupport {
-    Continuous,
-    Half,
-    Quarter,
-}
-
 #[derive(Clone, Debug)]
 struct Config {
     output_dir: PathBuf,
     actual_dir: PathBuf,
     fv_mode: FvMode,
     trade_mode: TradeMode,
-    tomato_support: TomatoSupport,
     seed: u64,
     strategy_path: Option<PathBuf>,
     python_bin: String,
     sessions: usize,
     write_session_limit: usize,
     ticks_per_day: usize,
+    sim_config: config::SimConfig,
+    fixed_params: bool,
+    dro: bool,
+    dro_radius: f64,
+    dro_k: usize,
 }
 
 #[derive(Clone, Debug)]
 struct ReplayData {
-    tomato_latent_state_by_day: HashMap<i32, Vec<TomatoLatentState>>,
+    tomato_fair_by_day: HashMap<i32, Vec<f64>>,
     trade_counts_by_key: HashMap<(i32, String), Vec<usize>>,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum HalfTieOrientation {
-    Inward,
-    Outward,
-}
-
-impl HalfTieOrientation {
-    fn flip(self) -> Self {
-        match self {
-            HalfTieOrientation::Inward => HalfTieOrientation::Outward,
-            HalfTieOrientation::Outward => HalfTieOrientation::Inward,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct TomatoLatentState {
-    fair: f64,
-    half_tie_orientation: HalfTieOrientation,
 }
 
 #[derive(Clone, Debug)]
@@ -176,37 +143,29 @@ impl RunningLinearFit {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 struct SessionSummary {
     session_id: usize,
     total_pnl: f64,
-    emerald_pnl: f64,
-    tomato_pnl: f64,
-    emerald_position: i32,
-    tomato_position: i32,
-    emerald_cash: f64,
-    tomato_cash: f64,
+    per_product_pnl: HashMap<String, f64>,
+    per_product_position: HashMap<String, i32>,
+    per_product_cash: HashMap<String, f64>,
+    per_product_slope_per_step: HashMap<String, f64>,
+    per_product_r2: HashMap<String, f64>,
     total_slope_per_step: f64,
     total_r2: f64,
-    emerald_slope_per_step: f64,
-    emerald_r2: f64,
-    tomato_slope_per_step: f64,
-    tomato_r2: f64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 struct RunSummary {
     session_id: usize,
     day: i32,
     total_pnl: f64,
-    emerald_pnl: f64,
-    tomato_pnl: f64,
+    per_product_pnl: HashMap<String, f64>,
+    per_product_slope_per_step: HashMap<String, f64>,
+    per_product_r2: HashMap<String, f64>,
     total_slope_per_step: f64,
     total_r2: f64,
-    emerald_slope_per_step: f64,
-    emerald_r2: f64,
-    tomato_slope_per_step: f64,
-    tomato_r2: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -215,6 +174,7 @@ struct SessionOutput {
     summary: SessionSummary,
     run_summaries: Vec<RunSummary>,
     day_outputs: Vec<DayOutput>,
+    dro_session_report: Option<dro::DroSessionReport>,
 }
 
 #[derive(Clone, Debug)]
@@ -349,34 +309,36 @@ struct WorkerResponse {
 
 impl Config {
     fn from_args() -> Result<Self> {
-        let mut config = Config {
-            output_dir: PathBuf::from("../tmp/rust_simulator_output"),
-            actual_dir: PathBuf::from("../data/round0"),
-            fv_mode: FvMode::Replay,
-            trade_mode: TradeMode::ReplayTimes,
-            tomato_support: TomatoSupport::Continuous,
-            seed: 20_260_401,
-            strategy_path: None,
-            python_bin: "python3".to_string(),
-            sessions: 1,
-            write_session_limit: 0,
-            ticks_per_day: DEFAULT_TICKS_PER_DAY,
-        };
+        let mut output_dir = PathBuf::from("../tmp/rust_simulator_output");
+        let mut actual_dir = PathBuf::from("../data/round0");
+        let mut fv_mode = FvMode::Replay;
+        let mut trade_mode = TradeMode::ReplayTimes;
+        let mut seed: u64 = 20_260_401;
+        let mut strategy_path: Option<PathBuf> = None;
+        let mut python_bin = "python3".to_string();
+        let mut sessions: usize = 1;
+        let mut write_session_limit: usize = 0;
+        let mut ticks_per_day: usize = DEFAULT_TICKS_PER_DAY;
+        let mut config_path: Option<String> = None;
+        let mut fixed_params = false;
+        let mut dro = false;
+        let mut dro_radius: f64 = 2.0;
+        let mut dro_k: usize = 8;
 
         let mut args = env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--output" => {
-                    config.output_dir =
+                    output_dir =
                         PathBuf::from(args.next().context("missing value for --output")?);
                 }
                 "--actual-dir" => {
-                    config.actual_dir =
+                    actual_dir =
                         PathBuf::from(args.next().context("missing value for --actual-dir")?);
                 }
                 "--fv-mode" => {
                     let value = args.next().context("missing value for --fv-mode")?;
-                    config.fv_mode = match value.as_str() {
+                    fv_mode = match value.as_str() {
                         "replay" => FvMode::Replay,
                         "simulate" => FvMode::Simulate,
                         other => bail!("unsupported --fv-mode {}", other),
@@ -384,62 +346,114 @@ impl Config {
                 }
                 "--trade-mode" => {
                     let value = args.next().context("missing value for --trade-mode")?;
-                    config.trade_mode = match value.as_str() {
+                    trade_mode = match value.as_str() {
                         "replay-times" => TradeMode::ReplayTimes,
                         "simulate" => TradeMode::Simulate,
                         other => bail!("unsupported --trade-mode {}", other),
                     };
                 }
                 "--tomato-support" => {
-                    let value = args.next().context("missing value for --tomato-support")?;
-                    config.tomato_support = match value.as_str() {
-                        "continuous" => TomatoSupport::Continuous,
-                        "0.5" | "half" => TomatoSupport::Half,
-                        "0.25" | "quarter" => TomatoSupport::Quarter,
-                        other => bail!("unsupported --tomato-support {}", other),
-                    };
+                    // deprecated; accepted but ignored
+                    let _ = args.next().context("missing value for --tomato-support")?;
                 }
                 "--seed" => {
-                    config.seed = args
+                    seed = args
                         .next()
                         .context("missing value for --seed")?
                         .parse()
                         .context("invalid --seed")?;
                 }
                 "--strategy" => {
-                    config.strategy_path = Some(PathBuf::from(
+                    strategy_path = Some(PathBuf::from(
                         args.next().context("missing value for --strategy")?,
                     ));
                 }
                 "--python-bin" => {
-                    config.python_bin = args.next().context("missing value for --python-bin")?;
+                    python_bin = args.next().context("missing value for --python-bin")?;
                 }
                 "--sessions" => {
-                    config.sessions = args
+                    sessions = args
                         .next()
                         .context("missing value for --sessions")?
                         .parse()
                         .context("invalid --sessions")?;
                 }
                 "--write-session-limit" => {
-                    config.write_session_limit = args
+                    write_session_limit = args
                         .next()
                         .context("missing value for --write-session-limit")?
                         .parse()
                         .context("invalid --write-session-limit")?;
                 }
                 "--ticks-per-day" => {
-                    config.ticks_per_day = args
+                    ticks_per_day = args
                         .next()
                         .context("missing value for --ticks-per-day")?
                         .parse()
                         .context("invalid --ticks-per-day")?;
                 }
+                "--config" => {
+                    config_path = Some(args.next().context("missing value for --config")?);
+                }
+                "--fixed-params" => {
+                    fixed_params = true;
+                }
+                "--dro" => {
+                    dro = true;
+                }
+                "--dro-radius" => {
+                    dro_radius = args
+                        .next()
+                        .context("missing value for --dro-radius")?
+                        .parse()
+                        .context("invalid --dro-radius")?;
+                }
+                "--dro-k" => {
+                    dro_k = args
+                        .next()
+                        .context("missing value for --dro-k")?
+                        .parse()
+                        .context("invalid --dro-k")?;
+                }
                 other => bail!("unknown argument {}", other),
             }
         }
 
-        Ok(config)
+        // resolve project root: prefer env var set by Python CLI, fall back to cwd parent
+        let project_root: PathBuf = env::var("PROSPERITY4MCBT_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                env::current_dir()
+                    .map(|cwd| cwd.parent().map(Path::to_path_buf).unwrap_or(cwd))
+                    .unwrap_or_else(|_| PathBuf::from("."))
+            });
+
+        let cfg_resolved: PathBuf = match config_path {
+            Some(ref p) => PathBuf::from(p),
+            None => project_root.join("configs/tutorial.toml"),
+        };
+        let cfg_text = fs::read_to_string(&cfg_resolved)
+            .with_context(|| format!("read {}", cfg_resolved.display()))?;
+        let sim_config: config::SimConfig = toml::from_str(&cfg_text)
+            .with_context(|| format!("parse {}", cfg_resolved.display()))?;
+
+        Ok(Config {
+            output_dir,
+            actual_dir,
+            fv_mode,
+            trade_mode,
+            seed,
+            strategy_path,
+            python_bin,
+            sessions,
+            write_session_limit,
+            ticks_per_day,
+            sim_config,
+            fixed_params,
+            dro,
+            dro_radius,
+            dro_k,
+        })
     }
 }
 
@@ -448,8 +462,11 @@ fn main() -> Result<()> {
     let replay_data = ReplayData::load(&config)?;
 
     if config.strategy_path.is_some() {
-        let outputs = run_backtests(&config, &replay_data)?;
+        let (outputs, dro_report) = run_backtests(&config, &replay_data)?;
         write_backtest_outputs(&config, &outputs)?;
+        if let Some(report) = dro_report {
+            write_dro_report(&config, &report)?;
+        }
         write_run_log(&config)?;
         return Ok(());
     }
@@ -466,7 +483,7 @@ fn main() -> Result<()> {
 
 impl ReplayData {
     fn load(config: &Config) -> Result<Self> {
-        let mut tomato_latent_state_by_day = HashMap::new();
+        let mut tomato_fair_by_day = HashMap::new();
         let mut trade_counts_by_key = HashMap::new();
 
         if config.fv_mode == FvMode::Replay {
@@ -477,18 +494,19 @@ impl ReplayData {
                     .filter(|row| row.product == "TOMATOES")
                     .collect();
                 rows.sort_by_key(|row| row.timestamp);
-                let latent_state_estimate = rows
+                let fair_series = rows
                     .iter()
-                    .map(estimate_tomato_latent_state)
+                    .map(estimate_tomato_fair)
                     .collect::<Vec<_>>();
-                tomato_latent_state_by_day.insert(day, latent_state_estimate);
+                tomato_fair_by_day.insert(day, fair_series);
             }
         }
 
         if config.trade_mode == TradeMode::ReplayTimes {
             for day in DAYS {
                 let trades = load_trade_rows(&config.actual_dir, day)?;
-                for product in PRODUCTS {
+                for pc in &config.sim_config.products {
+                    let product = pc.name.as_str();
                     let mut counts = vec![0usize; DEFAULT_TICKS_PER_DAY];
                     for trade in trades.iter().filter(|row| row.symbol == product) {
                         let index = usize::try_from(trade.timestamp / TIMESTAMP_STEP)
@@ -503,7 +521,7 @@ impl ReplayData {
         }
 
         Ok(Self {
-            tomato_latent_state_by_day,
+            tomato_fair_by_day,
             trade_counts_by_key,
         })
     }
@@ -511,34 +529,54 @@ impl ReplayData {
 
 fn generate_day(day: i32, config: &Config, replay: &ReplayData) -> Result<DayOutput> {
     let mut rng = ChaCha8Rng::seed_from_u64(seed_for_day(config.seed, day));
-    let tomato_latent_state = match config.fv_mode {
+    let tomato_fair = match config.fv_mode {
         FvMode::Replay => replay
-            .tomato_latent_state_by_day
+            .tomato_fair_by_day
             .get(&day)
             .cloned()
-            .context("missing replay tomato latent state estimate")?,
-        FvMode::Simulate => simulate_tomato_fair(day, config.tomato_support, config.ticks_per_day, &mut rng),
+            .context("missing replay tomato fair series")?,
+        FvMode::Simulate => simulate_tomato_fair_series(day, config.ticks_per_day, &mut rng),
     };
 
-    let emerald_trade_counts = trade_counts_for("EMERALDS", day, config, replay, &mut rng)?;
-    let tomato_trade_counts = trade_counts_for("TOMATOES", day, config, replay, &mut rng)?;
+    // sample per-session params for each product
+    let sampled_products: Vec<config::SampledProductParams> = config
+        .sim_config
+        .products
+        .iter()
+        .map(|pc| {
+            if config.fixed_params {
+                pc.to_point_estimate()
+            } else {
+                pc.sample_from_posterior(&mut rng)
+            }
+        })
+        .collect();
 
-    let mut price_rows = Vec::with_capacity(config.ticks_per_day * PRODUCTS.len());
+    // pre-compute trade counts per product
+    let mut trade_counts_per_product: Vec<Vec<usize>> = Vec::with_capacity(sampled_products.len());
+    for sampled in &sampled_products {
+        let counts = trade_counts_for(sampled, day, config, replay, &mut rng)?;
+        trade_counts_per_product.push(counts);
+    }
+
+    let mut price_rows = Vec::with_capacity(config.ticks_per_day * sampled_products.len());
     let mut trade_rows = Vec::new();
 
     for tick in 0..config.ticks_per_day {
         let timestamp = (tick as i32) * TIMESTAMP_STEP;
-        let emerald_book = make_emerald_book(&mut rng);
-        let tomato_book = make_tomato_book(tomato_latent_state[tick], &mut rng);
 
-        price_rows.push(book_to_price_row(day, timestamp, "EMERALDS", &emerald_book));
-        price_rows.push(book_to_price_row(day, timestamp, "TOMATOES", &tomato_book));
+        for (i, sampled) in sampled_products.iter().enumerate() {
+            let fv_for_book = if sampled.name == "TOMATOES" {
+                tomato_fair[tick]
+            } else {
+                sampled_fv_at_tick(sampled, tick)
+            };
+            let book = make_book(sampled, fv_for_book, &mut rng);
+            price_rows.push(book_to_price_row(day, timestamp, &sampled.name, &book));
 
-        for _ in 0..emerald_trade_counts[tick] {
-            trade_rows.extend(sample_trade_rows(timestamp, "EMERALDS", &emerald_book, &mut rng));
-        }
-        for _ in 0..tomato_trade_counts[tick] {
-            trade_rows.extend(sample_trade_rows(timestamp, "TOMATOES", &tomato_book, &mut rng));
+            for _ in 0..trade_counts_per_product[i][tick] {
+                trade_rows.extend(sample_trade_rows(timestamp, sampled, &book, &mut rng));
+            }
         }
     }
 
@@ -555,6 +593,17 @@ fn generate_day(day: i32, config: &Config, replay: &ReplayData) -> Result<DayOut
         trade_rows,
         trace_rows: Vec::new(),
     })
+}
+
+/// Returns current fair value for a product at a given tick.
+/// For TOMATOES we use the latent state vector; for fixed/OU we use the sampled initial.
+/// (full per-tick stepping is only done in the backtest session loop.)
+fn sampled_fv_at_tick(sampled: &config::SampledProductParams, _tick: usize) -> f64 {
+    match &sampled.fv_process {
+        config::SampledFvProcess::Fixed { price } => *price,
+        config::SampledFvProcess::DriftingWalk { initial, .. } => *initial,
+        config::SampledFvProcess::MeanRevertOU { center, .. } => *center,
+    }
 }
 
 fn write_outputs(config: &Config, outputs: &[DayOutput]) -> Result<()> {
@@ -684,7 +733,7 @@ impl Drop for StrategyWorker {
     }
 }
 
-fn run_backtests(config: &Config, replay: &ReplayData) -> Result<Vec<SessionOutput>> {
+fn run_backtests(config: &Config, replay: &ReplayData) -> Result<(Vec<SessionOutput>, Option<dro::DroReport>)> {
     let mut outputs = (0..config.sessions)
         .into_par_iter()
         .map(|session_id| {
@@ -692,11 +741,256 @@ fn run_backtests(config: &Config, replay: &ReplayData) -> Result<Vec<SessionOutp
         })
         .collect::<Result<Vec<_>>>()?;
     outputs.sort_by_key(|output| output.session_id);
-    Ok(outputs)
+
+    let dro_report = if config.dro {
+        let session_reports: Vec<dro::DroSessionReport> = outputs
+            .iter()
+            .map(|o| o.dro_session_report.clone().expect("dro enabled but report missing"))
+            .collect();
+        Some(dro::aggregate(session_reports, config.dro_radius, config.dro_k))
+    } else {
+        None
+    };
+
+    Ok((outputs, dro_report))
 }
 
 fn monte_carlo_session_day(session_id: usize) -> i32 {
     DAYS[session_id % DAYS.len()]
+}
+
+/// Result of simulating one day with given sampled products.
+struct DaySimResult {
+    per_product_pnl: HashMap<String, f64>,
+    per_product_cash: HashMap<String, f64>,
+    per_product_position: HashMap<String, i32>,
+    day_output: DayOutput,
+    day_total_fit: RunningLinearFit,
+    day_product_fits: HashMap<String, RunningLinearFit>,
+}
+
+/// Runs the full tick loop for one day with the given sampled products.
+/// Resets the worker before running.
+fn simulate_day(
+    worker: &mut StrategyWorker,
+    sampled_products: &[config::SampledProductParams],
+    product_names: &[String],
+    config: &Config,
+    replay: &ReplayData,
+    day: i32,
+    rng: &mut ChaCha8Rng,
+    capture_outputs: bool,
+) -> Result<DaySimResult> {
+    worker.reset()?;
+
+    let mut fv_states: Vec<products::FvState> = sampled_products
+        .iter()
+        .map(|s| products::FvState::initial(&s.fv_process))
+        .collect();
+
+    let tomato_fair = match config.fv_mode {
+        FvMode::Replay => replay
+            .tomato_fair_by_day
+            .get(&day)
+            .cloned()
+            .context("missing replay tomato fair series")?,
+        FvMode::Simulate => simulate_tomato_fair_series(day, config.ticks_per_day, rng),
+    };
+
+    let mut trade_counts_per_product: Vec<Vec<usize>> = Vec::with_capacity(sampled_products.len());
+    for sampled in sampled_products {
+        let counts = trade_counts_for(sampled, day, config, replay, rng)?;
+        trade_counts_per_product.push(counts);
+    }
+
+    let mut ledgers: HashMap<String, ProductLedger> = sampled_products
+        .iter()
+        .map(|s| (s.name.clone(), ProductLedger::default()))
+        .collect();
+
+    let mut trader_data = String::new();
+    let mut prev_own_trades: HashMap<String, Vec<Fill>> = empty_trade_map(product_names);
+    let mut prev_market_trades: HashMap<String, Vec<Fill>> = empty_trade_map(product_names);
+    let mut day_total_fit = RunningLinearFit::default();
+    let mut day_product_fits: HashMap<String, RunningLinearFit> = product_names
+        .iter()
+        .map(|n| (n.clone(), RunningLinearFit::default()))
+        .collect();
+    let mut day_step = 0usize;
+    let mut price_rows = if capture_outputs {
+        Vec::with_capacity(config.ticks_per_day * sampled_products.len())
+    } else {
+        Vec::new()
+    };
+    let mut trade_rows = Vec::new();
+    let mut trace_rows = Vec::new();
+
+    for tick in 0..config.ticks_per_day {
+        let timestamp = (tick as i32) * TIMESTAMP_STEP;
+
+        for (i, sampled) in sampled_products.iter().enumerate() {
+            fv_states[i].step(&sampled.fv_process, rng);
+        }
+
+        let books: Vec<Book> = sampled_products.iter().enumerate().map(|(i, sampled)| {
+            let fv = if sampled.name == "TOMATOES" {
+                tomato_fair[tick]
+            } else {
+                fv_states[i].current
+            };
+            make_book(sampled, fv, rng)
+        }).collect();
+
+        if capture_outputs {
+            for (i, sampled) in sampled_products.iter().enumerate() {
+                price_rows.push(book_to_price_row(day, timestamp, &sampled.name, &books[i]));
+            }
+        }
+
+        let order_depths: HashMap<String, WorkerOrderDepth> = sampled_products
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.name.clone(), book_to_worker_depth(&books[i])))
+            .collect();
+
+        let position = ledgers
+            .iter()
+            .map(|(product, ledger)| (product.clone(), ledger.position))
+            .collect::<HashMap<_, _>>();
+
+        let request = WorkerRequest {
+            request_type: "run".to_string(),
+            timestamp,
+            timeout_ms: STRATEGY_RUN_TIMEOUT_MS,
+            trader_data: trader_data.clone(),
+            order_depths,
+            own_trades: fills_to_worker_trade_map(&prev_own_trades, product_names),
+            market_trades: fills_to_worker_trade_map(&prev_market_trades, product_names),
+            position,
+        };
+        let response = worker.run(&request)?;
+        trader_data = response.trader_data.unwrap_or_default();
+
+        let mut live_books: HashMap<String, SimBook> = sampled_products
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.name.clone(), book_to_sim_book(&books[i])))
+            .collect();
+
+        let strategy_orders = normalize_strategy_orders(
+            response.orders.unwrap_or_default(),
+            product_names,
+        );
+        let filtered_orders = enforce_strategy_limits(&strategy_orders, &ledgers, sampled_products);
+
+        let mut own_trades_this_tick: HashMap<String, Vec<Fill>> = empty_trade_map(product_names);
+        let mut market_trades_this_tick: HashMap<String, Vec<Fill>> = empty_trade_map(product_names);
+
+        for sampled in sampled_products {
+            let product_key = &sampled.name;
+            let orders = filtered_orders
+                .get(product_key)
+                .cloned()
+                .unwrap_or_default();
+            let book = live_books.get_mut(product_key).context("missing live book")?;
+            let ledger = ledgers.get_mut(product_key).context("missing ledger")?;
+            let fills = execute_strategy_orders(product_key, timestamp, book, ledger, &orders);
+            if capture_outputs {
+                trade_rows.extend(fills.iter().map(fill_to_trade_row));
+            }
+            own_trades_this_tick.insert(product_key.clone(), fills);
+        }
+
+        for (idx, sampled) in sampled_products.iter().enumerate() {
+            let product_key = &sampled.name;
+            let count = trade_counts_per_product[idx][tick];
+            let book = live_books.get_mut(product_key).context("missing live book for taker")?;
+            let ledger = ledgers.get_mut(product_key).context("missing ledger for taker")?;
+            for _ in 0..count {
+                let market_buy = sample_trade_side(sampled, rng);
+                let fills = execute_taker_trade(product_key, timestamp, book, ledger, market_buy, rng);
+                for fill in fills {
+                    let row = fill_to_trade_row(&fill);
+                    if fill_involves_strategy(&fill) {
+                        own_trades_this_tick.entry(product_key.clone()).or_default().push(fill);
+                    } else {
+                        market_trades_this_tick.entry(product_key.clone()).or_default().push(fill);
+                    }
+                    if capture_outputs {
+                        trade_rows.push(row);
+                    }
+                }
+            }
+        }
+
+        if capture_outputs {
+            for (i, sampled) in sampled_products.iter().enumerate() {
+                let product_key = &sampled.name;
+                let ledger = ledgers.get(product_key).context("missing ledger for trace")?;
+                let fair = if sampled.name == "TOMATOES" {
+                    tomato_fair[tick]
+                } else {
+                    fv_states[i].current
+                };
+                trace_rows.push(TraceRow {
+                    day,
+                    timestamp,
+                    product: product_key.clone(),
+                    fair_value: fair,
+                    position: ledger.position,
+                    cash: ledger.cash,
+                    mtm_pnl: ledger.cash + ledger.position as f64 * fair,
+                });
+            }
+        }
+
+        let day_x = day_step as f64;
+        let mut day_total_mtm = 0.0;
+        for (i, sampled) in sampled_products.iter().enumerate() {
+            let product_key = &sampled.name;
+            let ledger = ledgers.get(product_key).context("missing ledger for fit")?;
+            let fair = if sampled.name == "TOMATOES" {
+                tomato_fair[tick]
+            } else {
+                fv_states[i].current
+            };
+            let mtm = ledger.cash + ledger.position as f64 * fair;
+            day_total_mtm += mtm;
+            day_product_fits.get_mut(product_key).context("missing day product fit")?.update(day_x, mtm);
+        }
+        day_total_fit.update(day_x, day_total_mtm);
+        day_step += 1;
+
+        prev_own_trades = own_trades_this_tick;
+        prev_market_trades = market_trades_this_tick;
+    }
+
+    // compute final per-product PnL
+    let mut per_product_pnl: HashMap<String, f64> = HashMap::new();
+    let mut per_product_cash: HashMap<String, f64> = HashMap::new();
+    let mut per_product_position: HashMap<String, i32> = HashMap::new();
+    for (i, sampled) in sampled_products.iter().enumerate() {
+        let product_key = &sampled.name;
+        let ledger = ledgers.get(product_key).context("missing ledger for day pnl")?;
+        let fair = if sampled.name == "TOMATOES" {
+            tomato_fair.last().copied().unwrap_or(5000.0)
+        } else {
+            fv_states[i].current
+        };
+        let pnl = ledger.cash + ledger.position as f64 * fair;
+        per_product_pnl.insert(product_key.clone(), pnl);
+        per_product_cash.insert(product_key.clone(), ledger.cash);
+        per_product_position.insert(product_key.clone(), ledger.position);
+    }
+
+    Ok(DaySimResult {
+        per_product_pnl,
+        per_product_cash,
+        per_product_position,
+        day_output: DayOutput { day, price_rows, trade_rows, trace_rows },
+        day_total_fit,
+        day_product_fits,
+    })
 }
 
 fn run_backtest_session(
@@ -707,229 +1001,173 @@ fn run_backtest_session(
 ) -> Result<SessionOutput> {
     let mut worker = StrategyWorker::spawn(config)?;
     let mut day_outputs = Vec::with_capacity(1);
-    let mut emerald_total = 0.0;
-    let mut tomato_total = 0.0;
-    let mut emerald_cash_total = 0.0;
-    let mut tomato_cash_total = 0.0;
-    let mut emerald_final_position = 0;
-    let mut tomato_final_position = 0;
     let mut total_fit = RunningLinearFit::default();
-    let mut emerald_fit = RunningLinearFit::default();
-    let mut tomato_fit = RunningLinearFit::default();
-    let mut global_step = 0usize;
     let mut run_summaries = Vec::with_capacity(1);
     let session_day = monte_carlo_session_day(session_id);
 
+    let product_names: Vec<String> = config.sim_config.products.iter().map(|p| p.name.clone()).collect();
+    let mut session_pnl: HashMap<String, f64> = product_names.iter().map(|n| (n.clone(), 0.0)).collect();
+    let mut session_cash: HashMap<String, f64> = product_names.iter().map(|n| (n.clone(), 0.0)).collect();
+    let mut session_position: HashMap<String, i32> = product_names.iter().map(|n| (n.clone(), 0)).collect();
+    let mut product_fits: HashMap<String, RunningLinearFit> = product_names.iter().map(|n| (n.clone(), RunningLinearFit::default())).collect();
+
     for day in [session_day] {
-        worker.reset()?;
+        // rng: first samples params (preserving original determinism), then drives the tick sim
         let mut rng = ChaCha8Rng::seed_from_u64(seed_for_session_day(config.seed, session_id, day));
-        let tomato_latent_state = match config.fv_mode {
-            FvMode::Replay => replay
-                .tomato_latent_state_by_day
-                .get(&day)
-                .cloned()
-                .context("missing replay tomato latent state estimate")?,
-            FvMode::Simulate => simulate_tomato_fair(day, config.tomato_support, config.ticks_per_day, &mut rng),
-        };
-
-        let emerald_trade_counts = trade_counts_for("EMERALDS", day, config, replay, &mut rng)?;
-        let tomato_trade_counts = trade_counts_for("TOMATOES", day, config, replay, &mut rng)?;
-
-        let mut ledgers = HashMap::from([
-            ("EMERALDS".to_string(), ProductLedger::default()),
-            ("TOMATOES".to_string(), ProductLedger::default()),
-        ]);
-        let mut trader_data = String::new();
-        let mut prev_own_trades = empty_trade_map();
-        let mut prev_market_trades = empty_trade_map();
-        let mut day_total_fit = RunningLinearFit::default();
-        let mut day_emerald_fit = RunningLinearFit::default();
-        let mut day_tomato_fit = RunningLinearFit::default();
-        let mut day_step = 0usize;
-        let mut price_rows = if capture_outputs {
-            Vec::with_capacity(config.ticks_per_day * PRODUCTS.len())
-        } else {
-            Vec::new()
-        };
-        let mut trade_rows = Vec::new();
-        let mut trace_rows = Vec::new();
-
-        for tick in 0..config.ticks_per_day {
-            let timestamp = (tick as i32) * TIMESTAMP_STEP;
-            let emerald_book = make_emerald_book(&mut rng);
-            let tomato_book = make_tomato_book(tomato_latent_state[tick], &mut rng);
-
-            if capture_outputs {
-                price_rows.push(book_to_price_row(day, timestamp, "EMERALDS", &emerald_book));
-                price_rows.push(book_to_price_row(day, timestamp, "TOMATOES", &tomato_book));
-            }
-
-            let order_depths = HashMap::from([
-                ("EMERALDS".to_string(), book_to_worker_depth(&emerald_book)),
-                ("TOMATOES".to_string(), book_to_worker_depth(&tomato_book)),
-            ]);
-            let position = ledgers
-                .iter()
-                .map(|(product, ledger)| (product.clone(), ledger.position))
-                .collect::<HashMap<_, _>>();
-            let request = WorkerRequest {
-                request_type: "run".to_string(),
-                timestamp,
-                timeout_ms: STRATEGY_RUN_TIMEOUT_MS,
-                trader_data: trader_data.clone(),
-                order_depths,
-                own_trades: fills_to_worker_trade_map(&prev_own_trades),
-                market_trades: fills_to_worker_trade_map(&prev_market_trades),
-                position,
-            };
-            let response = worker.run(&request)?;
-            trader_data = response.trader_data.unwrap_or_default();
-
-            let mut live_books = HashMap::from([
-                ("EMERALDS".to_string(), book_to_sim_book(&emerald_book)),
-                ("TOMATOES".to_string(), book_to_sim_book(&tomato_book)),
-            ]);
-            let strategy_orders = normalize_strategy_orders(response.orders.unwrap_or_default());
-            let filtered_orders = enforce_strategy_limits(&strategy_orders, &ledgers);
-
-            let mut own_trades_this_tick = empty_trade_map();
-            let mut market_trades_this_tick = empty_trade_map();
-
-            for product in PRODUCTS {
-                let product_key = product.to_string();
-                let orders = filtered_orders
-                    .get(product)
-                    .cloned()
-                    .unwrap_or_default();
-                let book = live_books
-                    .get_mut(&product_key)
-                    .context("missing live book")?;
-                let ledger = ledgers.get_mut(&product_key).context("missing ledger")?;
-                let fills = execute_strategy_orders(product, timestamp, book, ledger, &orders);
-                if capture_outputs {
-                    trade_rows.extend(fills.iter().map(fill_to_trade_row));
+        let nominal_sampled: Vec<config::SampledProductParams> = config
+            .sim_config
+            .products
+            .iter()
+            .map(|pc| {
+                if config.fixed_params {
+                    pc.to_point_estimate()
+                } else {
+                    pc.sample_from_posterior(&mut rng)
                 }
-                own_trades_this_tick.insert(product_key.clone(), fills);
-            }
+            })
+            .collect();
 
-            for (product, count) in [("EMERALDS", emerald_trade_counts[tick]), ("TOMATOES", tomato_trade_counts[tick])] {
-                let product_key = product.to_string();
-                let book = live_books
-                    .get_mut(&product_key)
-                    .context("missing live book for taker execution")?;
-                let ledger = ledgers.get_mut(&product_key).context("missing ledger for taker execution")?;
-                for _ in 0..count {
-                    let market_buy = sample_trade_side(product, &mut rng);
-                    let fills = execute_taker_trade(product, timestamp, book, ledger, market_buy, &mut rng);
-                    for fill in fills {
-                        let row = fill_to_trade_row(&fill);
-                        if fill_involves_strategy(&fill) {
-                            own_trades_this_tick.entry(product_key.clone()).or_default().push(fill);
-                        } else {
-                            market_trades_this_tick.entry(product_key.clone()).or_default().push(fill);
-                        }
-                        if capture_outputs {
-                            trade_rows.push(row);
-                        }
-                    }
-                }
-            }
+        let result = simulate_day(
+            &mut worker,
+            &nominal_sampled,
+            &product_names,
+            config,
+            replay,
+            day,
+            &mut rng,
+            capture_outputs,
+        )?;
 
-            if capture_outputs {
-                for product in PRODUCTS {
-                    let product_key = product.to_string();
-                    let ledger = ledgers.get(&product_key).context("missing ledger for trace")?;
-                    let fair = if product == "EMERALDS" {
-                        10_000.0
-                    } else {
-                        tomato_latent_state[tick].fair
-                    };
-                    trace_rows.push(TraceRow {
-                        day,
-                        timestamp,
-                        product: product_key,
-                        fair_value: fair,
-                        position: ledger.position,
-                        cash: ledger.cash,
-                        mtm_pnl: ledger.cash + ledger.position as f64 * fair,
-                    });
-                }
-            }
-
-            let emerald_ledger = ledgers.get("EMERALDS").context("missing emerald ledger for fit")?;
-            let tomato_ledger = ledgers.get("TOMATOES").context("missing tomato ledger for fit")?;
-            let emerald_mtm = emerald_ledger.cash + emerald_ledger.position as f64 * 10_000.0;
-            let tomato_mtm =
-                tomato_ledger.cash + tomato_ledger.position as f64 * tomato_latent_state[tick].fair;
-            let session_x = global_step as f64;
-            let day_x = day_step as f64;
-            emerald_fit.update(session_x, emerald_mtm);
-            tomato_fit.update(session_x, tomato_mtm);
-            total_fit.update(session_x, emerald_mtm + tomato_mtm);
-            day_emerald_fit.update(day_x, emerald_mtm);
-            day_tomato_fit.update(day_x, tomato_mtm);
-            day_total_fit.update(day_x, emerald_mtm + tomato_mtm);
-            global_step += 1;
-            day_step += 1;
-
-            prev_own_trades = own_trades_this_tick;
-            prev_market_trades = market_trades_this_tick;
+        // update session accumulators
+        for (product_key, pnl) in &result.per_product_pnl {
+            *session_pnl.entry(product_key.clone()).or_insert(0.0) += pnl;
+        }
+        for (product_key, cash) in &result.per_product_cash {
+            *session_cash.entry(product_key.clone()).or_insert(0.0) += cash;
+        }
+        for (product_key, pos) in &result.per_product_position {
+            *session_position.entry(product_key.clone()).or_insert(0) = *pos;
         }
 
-        let emerald_fair = 10_000.0;
-        let tomato_fair = tomato_latent_state
-            .last()
-            .map(|state| state.fair)
-            .unwrap_or(5_000.0);
-        let emerald_ledger = ledgers.get("EMERALDS").context("missing emerald ledger")?;
-        let tomato_ledger = ledgers.get("TOMATOES").context("missing tomato ledger")?;
-        let emerald_pnl = emerald_ledger.cash + emerald_ledger.position as f64 * emerald_fair;
-        let tomato_pnl = tomato_ledger.cash + tomato_ledger.position as f64 * tomato_fair;
+        // since there is exactly one day per session, day fits == session fits
+        for n in &product_names {
+            if let Some(df) = result.day_product_fits.get(n) {
+                if let Some(pf) = product_fits.get_mut(n) {
+                    *pf = df.clone();
+                }
+            }
+        }
+        total_fit = result.day_total_fit.clone();
 
-        emerald_total += emerald_pnl;
-        tomato_total += tomato_pnl;
-        emerald_cash_total += emerald_ledger.cash;
-        tomato_cash_total += tomato_ledger.cash;
-        emerald_final_position = emerald_ledger.position;
-        tomato_final_position = tomato_ledger.position;
+        let day_total_pnl: f64 = result.per_product_pnl.values().sum();
+        let day_per_product_slope: HashMap<String, f64> = product_names.iter()
+            .map(|n| (n.clone(), result.day_product_fits.get(n).map(|f| f.slope_per_step()).unwrap_or(0.0)))
+            .collect();
+        let day_per_product_r2: HashMap<String, f64> = product_names.iter()
+            .map(|n| (n.clone(), result.day_product_fits.get(n).map(|f| f.r_squared()).unwrap_or(0.0)))
+            .collect();
 
         run_summaries.push(RunSummary {
             session_id,
             day,
-            total_pnl: emerald_pnl + tomato_pnl,
-            emerald_pnl,
-            tomato_pnl,
-            total_slope_per_step: day_total_fit.slope_per_step(),
-            total_r2: day_total_fit.r_squared(),
-            emerald_slope_per_step: day_emerald_fit.slope_per_step(),
-            emerald_r2: day_emerald_fit.r_squared(),
-            tomato_slope_per_step: day_tomato_fit.slope_per_step(),
-            tomato_r2: day_tomato_fit.r_squared(),
+            total_pnl: day_total_pnl,
+            per_product_pnl: result.per_product_pnl.clone(),
+            total_slope_per_step: result.day_total_fit.slope_per_step(),
+            total_r2: result.day_total_fit.r_squared(),
+            per_product_slope_per_step: day_per_product_slope,
+            per_product_r2: day_per_product_r2,
         });
 
-        day_outputs.push(DayOutput {
-            day,
-            price_rows,
-            trade_rows,
-            trace_rows,
-        });
+        day_outputs.push(result.day_output);
     }
+
+    let total_pnl: f64 = session_pnl.values().sum();
+    let per_product_slope_per_step: HashMap<String, f64> = product_names.iter()
+        .map(|n| (n.clone(), product_fits.get(n).map(|f| f.slope_per_step()).unwrap_or(0.0)))
+        .collect();
+    let per_product_r2: HashMap<String, f64> = product_names.iter()
+        .map(|n| (n.clone(), product_fits.get(n).map(|f| f.r_squared()).unwrap_or(0.0)))
+        .collect();
 
     let summary = SessionSummary {
         session_id,
-        total_pnl: emerald_total + tomato_total,
-        emerald_pnl: emerald_total,
-        tomato_pnl: tomato_total,
-        emerald_position: emerald_final_position,
-        tomato_position: tomato_final_position,
-        emerald_cash: emerald_cash_total,
-        tomato_cash: tomato_cash_total,
+        total_pnl,
+        per_product_pnl: session_pnl.clone(),
+        per_product_position: session_position,
+        per_product_cash: session_cash,
+        per_product_slope_per_step,
+        per_product_r2,
         total_slope_per_step: total_fit.slope_per_step(),
         total_r2: total_fit.r_squared(),
-        emerald_slope_per_step: emerald_fit.slope_per_step(),
-        emerald_r2: emerald_fit.r_squared(),
-        tomato_slope_per_step: tomato_fit.slope_per_step(),
-        tomato_r2: tomato_fit.r_squared(),
+    };
+
+    // DRO: run K adversarial simulations if enabled
+    let dro_session_report = if config.dro {
+        let nominal_total_pnl = total_pnl;
+        let per_product_nominal_pnl = session_pnl.clone();
+
+        let mut adv_rng = ChaCha8Rng::seed_from_u64(
+            seed_for_session_day(config.seed, session_id, session_day).wrapping_add(0xD4_0000_0000u64)
+        );
+        let adv_batches = dro::sample_adversarial_params(
+            &config.sim_config.products,
+            config.dro_radius,
+            config.dro_k,
+            &mut adv_rng,
+        );
+
+        let mut worst_per_product: HashMap<String, f64> = per_product_nominal_pnl
+            .iter()
+            .map(|(k, _)| (k.clone(), f64::INFINITY))
+            .collect();
+        let mut worst_total = f64::INFINITY;
+
+        for (adv_idx, adv_params) in adv_batches.iter().enumerate() {
+            let mut adv_rng2 = ChaCha8Rng::seed_from_u64(
+                seed_for_session_day(config.seed, session_id, session_day)
+                    .wrapping_add(0xD4_0000_0000u64)
+                    .wrapping_add(adv_idx as u64 + 1)
+            );
+            let adv_result = simulate_day(
+                &mut worker,
+                adv_params,
+                &product_names,
+                config,
+                replay,
+                session_day,
+                &mut adv_rng2,
+                false,
+            )?;
+            let adv_total: f64 = adv_result.per_product_pnl.values().sum();
+            if adv_total < worst_total {
+                worst_total = adv_total;
+            }
+            for (k, v) in &adv_result.per_product_pnl {
+                let entry = worst_per_product.entry(k.clone()).or_insert(f64::INFINITY);
+                if *v < *entry {
+                    *entry = *v;
+                }
+            }
+        }
+        // if no adversarial draws produced finite values, fall back to nominal
+        if worst_total == f64::INFINITY {
+            worst_total = nominal_total_pnl;
+        }
+        for (k, v) in worst_per_product.iter_mut() {
+            if *v == f64::INFINITY {
+                *v = *per_product_nominal_pnl.get(k).unwrap_or(&0.0);
+            }
+        }
+
+        Some(dro::DroSessionReport {
+            session_id,
+            nominal_total_pnl,
+            worst_total_pnl: worst_total,
+            per_product_nominal_pnl,
+            per_product_worst_pnl: worst_per_product,
+        })
+    } else {
+        None
     };
 
     Ok(SessionOutput {
@@ -937,18 +1175,115 @@ fn run_backtest_session(
         summary,
         run_summaries,
         day_outputs,
+        dro_session_report,
     })
+}
+
+/// Build CSV header for session summary (sorted by product name for stability).
+fn session_summary_header(product_names: &[String]) -> Vec<String> {
+    let mut sorted: Vec<&String> = product_names.iter().collect();
+    sorted.sort();
+    let mut cols = vec!["session_id".to_string(), "total_pnl".to_string()];
+    for n in &sorted {
+        cols.push(format!("{}_pnl", n));
+    }
+    for n in &sorted {
+        cols.push(format!("{}_position", n));
+    }
+    for n in &sorted {
+        cols.push(format!("{}_cash", n));
+    }
+    cols.push("total_slope_per_step".to_string());
+    cols.push("total_r2".to_string());
+    for n in &sorted {
+        cols.push(format!("{}_slope_per_step", n));
+    }
+    for n in &sorted {
+        cols.push(format!("{}_r2", n));
+    }
+    cols
+}
+
+fn session_summary_row(summary: &SessionSummary, product_names: &[String]) -> Vec<String> {
+    let mut sorted: Vec<&String> = product_names.iter().collect();
+    sorted.sort();
+    let mut row = vec![
+        summary.session_id.to_string(),
+        summary.total_pnl.to_string(),
+    ];
+    for n in &sorted {
+        row.push(summary.per_product_pnl.get(*n).copied().unwrap_or(0.0).to_string());
+    }
+    for n in &sorted {
+        row.push(summary.per_product_position.get(*n).copied().unwrap_or(0).to_string());
+    }
+    for n in &sorted {
+        row.push(summary.per_product_cash.get(*n).copied().unwrap_or(0.0).to_string());
+    }
+    row.push(summary.total_slope_per_step.to_string());
+    row.push(summary.total_r2.to_string());
+    for n in &sorted {
+        row.push(summary.per_product_slope_per_step.get(*n).copied().unwrap_or(0.0).to_string());
+    }
+    for n in &sorted {
+        row.push(summary.per_product_r2.get(*n).copied().unwrap_or(0.0).to_string());
+    }
+    row
+}
+
+fn run_summary_header(product_names: &[String]) -> Vec<String> {
+    let mut sorted: Vec<&String> = product_names.iter().collect();
+    sorted.sort();
+    let mut cols = vec!["session_id".to_string(), "day".to_string(), "total_pnl".to_string()];
+    for n in &sorted {
+        cols.push(format!("{}_pnl", n));
+    }
+    cols.push("total_slope_per_step".to_string());
+    cols.push("total_r2".to_string());
+    for n in &sorted {
+        cols.push(format!("{}_slope_per_step", n));
+    }
+    for n in &sorted {
+        cols.push(format!("{}_r2", n));
+    }
+    cols
+}
+
+fn run_summary_row(rs: &RunSummary, product_names: &[String]) -> Vec<String> {
+    let mut sorted: Vec<&String> = product_names.iter().collect();
+    sorted.sort();
+    let mut row = vec![
+        rs.session_id.to_string(),
+        rs.day.to_string(),
+        rs.total_pnl.to_string(),
+    ];
+    for n in &sorted {
+        row.push(rs.per_product_pnl.get(*n).copied().unwrap_or(0.0).to_string());
+    }
+    row.push(rs.total_slope_per_step.to_string());
+    row.push(rs.total_r2.to_string());
+    for n in &sorted {
+        row.push(rs.per_product_slope_per_step.get(*n).copied().unwrap_or(0.0).to_string());
+    }
+    for n in &sorted {
+        row.push(rs.per_product_r2.get(*n).copied().unwrap_or(0.0).to_string());
+    }
+    row
 }
 
 fn write_backtest_outputs(config: &Config, outputs: &[SessionOutput]) -> Result<()> {
     fs::create_dir_all(&config.output_dir)?;
+
+    let product_names: Vec<String> = config.sim_config.products.iter().map(|p| p.name.clone()).collect();
+
     let summary_path = config.output_dir.join("session_summary.csv");
     let mut writer = WriterBuilder::new()
         .delimiter(b',')
         .from_path(&summary_path)
         .with_context(|| format!("failed to open {}", summary_path.display()))?;
+    writer.write_record(session_summary_header(&product_names))?;
     for output in outputs {
-        writer.serialize(&output.summary)?;
+        writer.write_record(session_summary_row(&output.summary, &product_names))?;
     }
     writer.flush()?;
 
@@ -957,9 +1292,10 @@ fn write_backtest_outputs(config: &Config, outputs: &[SessionOutput]) -> Result<
         .delimiter(b',')
         .from_path(&run_summary_path)
         .with_context(|| format!("failed to open {}", run_summary_path.display()))?;
+    run_writer.write_record(run_summary_header(&product_names))?;
     for output in outputs {
         for run_summary in &output.run_summaries {
-            run_writer.serialize(run_summary)?;
+            run_writer.write_record(run_summary_row(run_summary, &product_names))?;
         }
     }
     run_writer.flush()?;
@@ -998,16 +1334,22 @@ fn write_backtest_outputs(config: &Config, outputs: &[SessionOutput]) -> Result<
     Ok(())
 }
 
+fn write_dro_report(config: &Config, report: &dro::DroReport) -> Result<()> {
+    fs::create_dir_all(&config.output_dir)?;
+    let path = config.output_dir.join("dro_report.json");
+    let json = serde_json::to_string_pretty(report)?;
+    fs::write(&path, json).with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
 fn write_run_log(config: &Config) -> Result<()> {
     let log_path = config.output_dir.join("run.log");
     let contents = format!(
-        "seed={}\nfv_mode={:?}\ntrade_mode={:?}\ntomato_support={:?}\nactual_dir={}\nstrategy={}\nsessions={}\nwrite_session_limit={}\n",
+        "seed={}\nfv_mode={:?}\ntrade_mode={:?}\nactual_dir={}\nstrategy={}\nsessions={}\nwrite_session_limit={}\n",
         config.seed,
         config.fv_mode,
         config.trade_mode,
-        config.tomato_support,
-        config.actual_dir.display()
-        ,
+        config.actual_dir.display(),
         config
             .strategy_path
             .as_ref()
@@ -1034,19 +1376,19 @@ fn seed_for_session_day(seed: u64, session_id: usize, day: i32) -> u64 {
     seed_for_day(seed ^ ((session_id as u64).wrapping_mul(0xA24B_AED4_963E_E407)), day)
 }
 
-fn empty_trade_map() -> HashMap<String, Vec<Fill>> {
-    HashMap::from([
-        ("EMERALDS".to_string(), Vec::new()),
-        ("TOMATOES".to_string(), Vec::new()),
-    ])
+fn empty_trade_map(product_names: &[String]) -> HashMap<String, Vec<Fill>> {
+    product_names.iter().map(|n| (n.clone(), Vec::new())).collect()
 }
 
-fn fills_to_worker_trade_map(source: &HashMap<String, Vec<Fill>>) -> HashMap<String, Vec<WorkerTrade>> {
-    PRODUCTS
+fn fills_to_worker_trade_map(
+    source: &HashMap<String, Vec<Fill>>,
+    product_names: &[String],
+) -> HashMap<String, Vec<WorkerTrade>> {
+    product_names
         .iter()
         .map(|product| {
             let trades = source
-                .get(*product)
+                .get(product)
                 .cloned()
                 .unwrap_or_default()
                 .into_iter()
@@ -1059,7 +1401,7 @@ fn fills_to_worker_trade_map(source: &HashMap<String, Vec<Fill>>) -> HashMap<Str
                     timestamp: fill.timestamp,
                 })
                 .collect::<Vec<_>>();
-            ((*product).to_string(), trades)
+            (product.clone(), trades)
         })
         .collect()
 }
@@ -1106,13 +1448,14 @@ fn book_to_sim_book(book: &Book) -> SimBook {
 
 fn normalize_strategy_orders(
     raw: HashMap<String, Vec<WorkerOrder>>,
+    product_names: &[String],
 ) -> HashMap<String, Vec<WorkerOrder>> {
-    PRODUCTS
+    product_names
         .iter()
         .map(|product| {
             (
-                (*product).to_string(),
-                raw.get(*product).cloned().unwrap_or_default(),
+                product.clone(),
+                raw.get(product).cloned().unwrap_or_default(),
             )
         })
         .collect()
@@ -1121,10 +1464,16 @@ fn normalize_strategy_orders(
 fn enforce_strategy_limits(
     orders: &HashMap<String, Vec<WorkerOrder>>,
     ledgers: &HashMap<String, ProductLedger>,
+    sampled_products: &[config::SampledProductParams],
 ) -> HashMap<String, Vec<WorkerOrder>> {
     orders
         .iter()
         .map(|(product, product_orders)| {
+            let position_limit = sampled_products
+                .iter()
+                .find(|s| &s.name == product)
+                .map(|s| s.position_limit)
+                .unwrap_or(80);
             let current_position = ledgers.get(product).map(|ledger| ledger.position).unwrap_or(0);
             let total_buy: i32 = product_orders
                 .iter()
@@ -1137,8 +1486,8 @@ fn enforce_strategy_limits(
                 .map(|order| -order.quantity)
                 .sum();
 
-            let accepted = if current_position + total_buy > POSITION_LIMIT
-                || current_position - total_sell < -POSITION_LIMIT
+            let accepted = if current_position + total_buy > position_limit
+                || current_position - total_sell < -position_limit
             {
                 Vec::new()
             } else {
@@ -1388,13 +1737,8 @@ fn fill_to_trade_row(fill: &Fill) -> TradeRow {
     }
 }
 
-fn sample_trade_side(product: &str, rng: &mut ChaCha8Rng) -> bool {
-    let buy_prob = if product == "EMERALDS" {
-        EMERALDS_TRADE_BUY_PROB
-    } else {
-        TOMATOES_TRADE_BUY_PROB
-    };
-    rng.gen_bool(buy_prob)
+fn sample_trade_side(sampled: &config::SampledProductParams, rng: &mut ChaCha8Rng) -> bool {
+    rng.r#gen::<f64>() < sampled.taker_buy_prob
 }
 
 fn load_price_rows(actual_dir: &Path, day: i32) -> Result<Vec<InputPriceRow>> {
@@ -1439,12 +1783,9 @@ fn infer_observed_fair(row: &InputPriceRow) -> f64 {
     (worst_bid as f64 + worst_ask as f64) / 2.0
 }
 
-fn estimate_tomato_latent_state(row: &InputPriceRow) -> TomatoLatentState {
+fn estimate_tomato_fair(row: &InputPriceRow) -> f64 {
     let Some((inner_bid, outer_bid, inner_ask, outer_ask)) = tomato_wall_quotes(row) else {
-        return TomatoLatentState {
-            fair: infer_observed_fair(row),
-            half_tie_orientation: HalfTieOrientation::Inward,
-        };
+        return infer_observed_fair(row);
     };
 
     let intervals = [
@@ -1463,20 +1804,10 @@ fn estimate_tomato_latent_state(row: &InputPriceRow) -> TomatoLatentState {
         .map(|(_, hi)| *hi)
         .fold(f64::INFINITY, f64::min);
 
-    let fair = if lower <= upper {
+    if lower <= upper {
         (lower + upper) / 2.0
     } else {
         (outer_bid as f64 + outer_ask as f64) / 2.0
-    };
-    let half_tie_orientation = match outer_ask - outer_bid {
-        15 => HalfTieOrientation::Inward,
-        17 => HalfTieOrientation::Outward,
-        _ => HalfTieOrientation::Inward,
-    };
-
-    TomatoLatentState {
-        fair,
-        half_tie_orientation,
     }
 }
 
@@ -1515,7 +1846,7 @@ fn interval_from_quote(price: i32, offset: f64) -> (f64, f64) {
 }
 
 fn trade_counts_for(
-    product: &str,
+    sampled: &config::SampledProductParams,
     day: i32,
     config: &Config,
     replay: &ReplayData,
@@ -1524,29 +1855,21 @@ fn trade_counts_for(
     match config.trade_mode {
         TradeMode::ReplayTimes => replay
             .trade_counts_by_key
-            .get(&(day, product.to_string()))
+            .get(&(day, sampled.name.clone()))
             .cloned()
             .context("missing replay trade count series"),
-        TradeMode::Simulate => Ok(simulate_trade_counts(product, config.ticks_per_day, rng)),
+        TradeMode::Simulate => Ok(simulate_trade_counts(sampled, config.ticks_per_day, rng)),
     }
 }
 
-fn simulate_trade_counts(product: &str, ticks: usize, rng: &mut ChaCha8Rng) -> Vec<usize> {
-    let base_prob = if product == "EMERALDS" {
-        EMERALDS_TRADE_ACTIVE_PROB
-    } else {
-        TOMATOES_TRADE_ACTIVE_PROB
-    };
-    let second_trade_prob = if product == "TOMATOES" {
-        TOMATOES_SECOND_TRADE_PROB
-    } else {
-        0.0
-    };
+fn simulate_trade_counts(sampled: &config::SampledProductParams, ticks: usize, rng: &mut ChaCha8Rng) -> Vec<usize> {
+    let base_prob = sampled.taker_trade_active_prob;
+    let second_trade_prob = sampled.taker_second_trade_prob;
     let mut counts = vec![0usize; ticks];
     for count in &mut counts {
-        if rng.gen_bool(base_prob) {
+        if rng.gen_bool(base_prob.clamp(f64::EPSILON, 1.0 - f64::EPSILON)) {
             *count = 1;
-            if second_trade_prob > 0.0 && rng.gen_bool(second_trade_prob) {
+            if second_trade_prob > 0.0 && rng.gen_bool(second_trade_prob.clamp(f64::EPSILON, 1.0 - f64::EPSILON)) {
                 *count += 1;
             }
         }
@@ -1554,207 +1877,94 @@ fn simulate_trade_counts(product: &str, ticks: usize, rng: &mut ChaCha8Rng) -> V
     counts
 }
 
-fn simulate_tomato_fair(
-    day: i32,
-    support: TomatoSupport,
-    ticks: usize,
-    rng: &mut ChaCha8Rng,
-) -> Vec<TomatoLatentState> {
-    let start = if day == -1 { 5006.0 } else { 5000.0 };
+fn simulate_tomato_fair_series(day: i32, ticks: usize, rng: &mut ChaCha8Rng) -> Vec<f64> {
+    let start: f64 = if day == -1 { 5006.0 } else { 5000.0 };
     let sigma = 0.496;
-    let mut states = vec![
-        TomatoLatentState {
-            fair: 0.0,
-            half_tie_orientation: HalfTieOrientation::Inward,
-        };
-        ticks
-    ];
-    let mut orientation = if rng.gen_bool(0.5) {
-        HalfTieOrientation::Inward
-    } else {
-        HalfTieOrientation::Outward
-    };
-    states[0] = TomatoLatentState {
-        fair: quantize_tomato_fair(start, support),
-        half_tie_orientation: orientation,
-    };
-
+    let mut series = vec![0.0f64; ticks];
+    series[0] = start.round();
     for index in 1..ticks {
-        let step = sigma * sample_standard_normal(rng);
-        if rng.gen_bool(TOMATO_HALF_TIE_FLIP_PROB) {
-            orientation = orientation.flip();
-        }
-        states[index] = TomatoLatentState {
-            fair: quantize_tomato_fair(states[index - 1].fair + step, support),
-            half_tie_orientation: orientation,
-        };
+        let u1 = rng.gen_range(f64::EPSILON..1.0);
+        let u2 = rng.gen_range(0.0..1.0);
+        let step = sigma * (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+        series[index] = (series[index - 1] + step).round();
     }
-
-    states
+    series
 }
 
-fn quantize_tomato_fair(value: f64, support: TomatoSupport) -> f64 {
-    match support {
-        TomatoSupport::Continuous => value,
-        TomatoSupport::Half => (value * 2.0).round() / 2.0,
-        TomatoSupport::Quarter => (value * 4.0).round() / 4.0,
-    }
-}
+/// Generic book builder driven by `SampledProductParams`.
+/// bot1 = outer market maker, bot2 = inner market maker.
+fn make_book(sampled: &config::SampledProductParams, fv: f64, rng: &mut ChaCha8Rng) -> Book {
+    let bot1_vol = rng.gen_range(sampled.bot1_volume_lo..=sampled.bot1_volume_hi) as i32;
+    let bot2_vol = rng.gen_range(sampled.bot2_volume_lo..=sampled.bot2_volume_hi) as i32;
 
-fn sample_standard_normal(rng: &mut ChaCha8Rng) -> f64 {
-    let u1 = rng.gen_range(f64::EPSILON..1.0);
-    let u2 = rng.gen_range(0.0..1.0);
-    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
-}
+    let (outer_bid, outer_ask) = products::quote_for_rule(
+        &sampled.bot1_bid_rule,
+        &sampled.bot1_ask_rule,
+        fv,
+        sampled.bot1_offset,
+    );
+    let (inner_bid, inner_ask) = products::quote_for_rule(
+        &sampled.bot2_bid_rule,
+        &sampled.bot2_ask_rule,
+        fv,
+        sampled.bot2_offset,
+    );
 
-fn make_emerald_book(rng: &mut ChaCha8Rng) -> Book {
-    let fair = 10_000;
-    let inner_size = rng.gen_range(10..=15);
-    let outer_size = rng.gen_range(20..=30);
-    let draw: f64 = rng.gen_range(0.0..1.0);
-
-    if draw < 321.0 / 20_000.0 {
-        let bot3_size = rng.gen_range(5..=10);
+    // bot3 presence check
+    let draw: f64 = rng.r#gen();
+    if draw < sampled.bot3_presence * sampled.bot3_side_bid_prob {
+        // bot3 on bid side
+        let (bot3_price, bot3_vol) = sample_bot3_quote(fv, sampled, true, rng);
         Book {
             bids: vec![
-                (fair, bot3_size),
-                (fair - 8, inner_size),
-                (fair - 10, outer_size),
+                (bot3_price, bot3_vol),
+                (inner_bid, bot2_vol),
+                (outer_bid, bot1_vol),
             ],
-            asks: vec![(fair + 8, inner_size), (fair + 10, outer_size)],
+            asks: vec![(inner_ask, bot2_vol), (outer_ask, bot1_vol)],
         }
-    } else if draw < (321.0 + 333.0) / 20_000.0 {
-        let bot3_size = rng.gen_range(5..=10);
+    } else if draw < sampled.bot3_presence {
+        // bot3 on ask side
+        let (bot3_price, bot3_vol) = sample_bot3_quote(fv, sampled, false, rng);
         Book {
-            bids: vec![(fair - 8, inner_size), (fair - 10, outer_size)],
+            bids: vec![(inner_bid, bot2_vol), (outer_bid, bot1_vol)],
             asks: vec![
-                (fair, bot3_size),
-                (fair + 8, inner_size),
-                (fair + 10, outer_size),
+                (bot3_price, bot3_vol),
+                (inner_ask, bot2_vol),
+                (outer_ask, bot1_vol),
             ],
         }
     } else {
         Book {
-            bids: vec![(fair - 8, inner_size), (fair - 10, outer_size)],
-            asks: vec![(fair + 8, inner_size), (fair + 10, outer_size)],
+            bids: vec![(inner_bid, bot2_vol), (outer_bid, bot1_vol)],
+            asks: vec![(inner_ask, bot2_vol), (outer_ask, bot1_vol)],
         }
     }
 }
 
-fn make_tomato_book(latent_state: TomatoLatentState, rng: &mut ChaCha8Rng) -> Book {
-    let outer_size = rng.gen_range(15..=25);
-    let inner_size = rng.gen_range(5..=10);
-    let (outer_bid, outer_ask) = tomato_outer_quotes(latent_state);
-    let (inner_bid, inner_ask) = tomato_inner_quotes(latent_state.fair);
-    let draw: f64 = rng.gen_range(0.0..1.0);
-
-    // Bot 3: 6.3% presence, 50/50 bid/ask
-    if draw < 0.063 / 2.0 {
-        let (bot3_price, bot3_size) = tomato_bot3_bid_quote(latent_state.fair, rng);
-        Book {
-            bids: vec![
-                (bot3_price, bot3_size),
-                (inner_bid, inner_size),
-                (outer_bid, outer_size),
-            ],
-            asks: vec![(inner_ask, inner_size), (outer_ask, outer_size)],
-        }
-    } else if draw < 0.063 {
-        let (bot3_price, bot3_size) = tomato_bot3_ask_quote(latent_state.fair, rng);
-        Book {
-            bids: vec![(inner_bid, inner_size), (outer_bid, outer_size)],
-            asks: vec![
-                (bot3_price, bot3_size),
-                (inner_ask, inner_size),
-                (outer_ask, outer_size),
-            ],
-        }
+fn sample_bot3_quote(
+    fv: f64,
+    sampled: &config::SampledProductParams,
+    is_bid: bool,
+    rng: &mut ChaCha8Rng,
+) -> (i32, i32) {
+    let support = &sampled.bot3_price_delta_support;
+    let delta = if support.is_empty() {
+        0
     } else {
-        Book {
-            bids: vec![(inner_bid, inner_size), (outer_bid, outer_size)],
-            asks: vec![(inner_ask, inner_size), (outer_ask, outer_size)],
-        }
-    }
-}
-
-fn tomato_outer_quotes(latent_state: TomatoLatentState) -> (i32, i32) {
-    let bid_target = latent_state.fair - 8.0;
-    let ask_target = latent_state.fair + 8.0;
-
-    if is_half_tie(bid_target) && is_half_tie(ask_target) {
-        // Bot 1 is deterministic once the latent half-tie orientation bit is
-        // part of the shared fair state. Bot 2 ignores this bit because its
-        // +/-6.5 targets on half-mid rows land on exact integers.
-        match latent_state.half_tie_orientation {
-            HalfTieOrientation::Inward => (round_up(bid_target), round_down(ask_target)),
-            HalfTieOrientation::Outward => (round_down(bid_target), round_up(ask_target)),
-        }
-    } else {
-        (round_nearest(bid_target), round_nearest(ask_target))
-    }
-}
-
-fn tomato_inner_quotes(latent_fair: f64) -> (i32, i32) {
-    // Calibrated: bid rounds at frac=0.25, ask rounds at frac=0.75
-    // bid = floor(FV + 0.75) - 7
-    // ask = ceil(FV + 0.25) + 6
-    let bid = (latent_fair + 0.75).floor() as i32 - 7;
-    let ask = (latent_fair + 0.25).ceil() as i32 + 6;
-    (bid, ask)
-}
-
-fn tomato_bot3_bid_quote(latent_fair: f64, rng: &mut ChaCha8Rng) -> (i32, i32) {
-    // 2/3 passive (offset -2 or -1), 1/3 aggressive (offset 0 or +1)
-    // 50/50 within each group
-    let passive = rng.gen_bool(2.0 / 3.0);
-    let near = rng.gen_bool(0.5);
-    let offset = if passive {
-        if near { -1 } else { -2 }
-    } else {
-        if near { 0 } else { 1 }
+        support[rng.gen_range(0..support.len())]
     };
-    let price = round_nearest(latent_fair) + offset;
-    let size = if passive {
-        rng.gen_range(2..=6)
+    // for bid, aggressive = positive delta; for ask, aggressive = negative delta
+    let price = fv.round() as i32 + if is_bid { delta } else { -delta };
+    // determine if this delta is "crossing" (aggressive) or passive
+    // crossing: delta causes bot to cross the spread (bid delta > 0 or ask delta > 0 after negation)
+    let is_crossing = if is_bid { delta > 0 } else { delta < 0 };
+    let vol = if is_crossing {
+        rng.gen_range(sampled.bot3_crossing_volume_lo..=sampled.bot3_crossing_volume_hi) as i32
     } else {
-        rng.gen_range(5..=12)
+        rng.gen_range(sampled.bot3_passive_volume_lo..=sampled.bot3_passive_volume_hi) as i32
     };
-    (price, size)
-}
-
-fn tomato_bot3_ask_quote(latent_fair: f64, rng: &mut ChaCha8Rng) -> (i32, i32) {
-    // 2/3 passive (offset 0 or +1), 1/3 aggressive (offset -2 or -1)
-    // 50/50 within each group
-    let passive = rng.gen_bool(2.0 / 3.0);
-    let near = rng.gen_bool(0.5);
-    let offset = if passive {
-        if near { 0 } else { 1 }
-    } else {
-        if near { -1 } else { -2 }
-    };
-    let price = round_nearest(latent_fair) + offset;
-    let size = if passive {
-        rng.gen_range(2..=6)
-    } else {
-        rng.gen_range(5..=12)
-    };
-    (price, size)
-}
-
-fn round_nearest(value: f64) -> i32 {
-    value.round() as i32
-}
-
-fn round_down(value: f64) -> i32 {
-    value.floor() as i32
-}
-
-fn round_up(value: f64) -> i32 {
-    value.ceil() as i32
-}
-
-fn is_half_tie(value: f64) -> bool {
-    ((value.fract().abs()) - 0.5).abs() < 1e-9
+    (price, vol)
 }
 
 fn book_to_price_row(day: i32, timestamp: i32, product: &str, book: &Book) -> PriceRow {
@@ -1787,8 +1997,13 @@ fn book_to_price_row(day: i32, timestamp: i32, product: &str, book: &Book) -> Pr
     }
 }
 
-fn sample_trade_rows(timestamp: i32, product: &str, book: &Book, rng: &mut ChaCha8Rng) -> Vec<TradeRow> {
-    let market_buy = sample_trade_side(product, rng);
+fn sample_trade_rows(
+    timestamp: i32,
+    sampled: &config::SampledProductParams,
+    book: &Book,
+    rng: &mut ChaCha8Rng,
+) -> Vec<TradeRow> {
+    let market_buy = sample_trade_side(sampled, rng);
     let available_volume: i32 = if market_buy {
         book.asks.iter().map(|(_, volume)| *volume).sum()
     } else {
@@ -1798,7 +2013,7 @@ fn sample_trade_rows(timestamp: i32, product: &str, book: &Book, rng: &mut ChaCh
         return Vec::new();
     }
 
-    let quantity = sample_trade_quantity_by_side(product, market_buy, available_volume, rng);
+    let quantity = sample_trade_quantity_by_side(&sampled.name, market_buy, available_volume, rng);
 
     let mut rows = Vec::new();
     let mut remaining = quantity;
@@ -1812,7 +2027,7 @@ fn sample_trade_rows(timestamp: i32, product: &str, book: &Book, rng: &mut ChaCh
                 timestamp,
                 buyer: None,
                 seller: None,
-                symbol: product.to_string(),
+                symbol: sampled.name.clone(),
                 currency: "XIRECS".to_string(),
                 price: *price as f64,
                 quantity: fill_qty,
@@ -1829,7 +2044,7 @@ fn sample_trade_rows(timestamp: i32, product: &str, book: &Book, rng: &mut ChaCh
                 timestamp,
                 buyer: None,
                 seller: None,
-                symbol: product.to_string(),
+                symbol: sampled.name.clone(),
                 currency: "XIRECS".to_string(),
                 price: *price as f64,
                 quantity: fill_qty,

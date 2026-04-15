@@ -1,0 +1,74 @@
+[meta]
+round = 1
+ticks_per_day = 10000
+shared_position_limit = 80
+
+[[products]]
+name = "ASH_COATED_OSMIUM"
+position_limit = 80
+
+[products.fv_process]
+model = "mean_revert_ou"
+center = 9999.226068433003
+kappa  = { dist = "lognormal", mu = -3.215015, sigma = 0.211290 }
+sigma  = { dist = "lognormal", mu = -0.859780, sigma = 0.230827 }
+
+[products.bot1]
+bid_rule = "floor_fv_minus_offset"
+ask_rule = "ceil_fv_plus_offset"
+offset   = 10.0
+volume   = { dist = "uniform_int", lo = 20, hi = 30 }
+
+[products.bot2]
+bid_rule = "round_fv_minus_offset"
+ask_rule = "round_fv_plus_offset"
+offset   = 8.0
+volume   = { dist = "uniform_int", lo = 10, hi = 15 }
+presence_rate = 0.946
+
+[products.bot3]
+presence_rate       = { dist = "beta", alpha = 78, beta = 922 }
+side_bid_prob       = 0.506
+price_delta_support = [-3, -2, 0, 1, 2]
+crossing_volume     = { dist = "uniform_int", lo = 4, hi = 10 }
+passive_volume      = { dist = "uniform_int", lo = 1, hi = 6 }
+
+[products.taker]
+trade_active_prob = { dist = "beta", alpha = 1266, beta = 28736 }
+second_trade_prob = { dist = "beta", alpha = 64, beta = 1138 }
+buy_prob          = { dist = "beta", alpha = 1, beta = 1 }
+
+[[products]]
+name = "INTARIAN_PEPPER_ROOT"
+position_limit = 80
+
+[products.fv_process]
+model = "drifting_walk"
+initial = 12006.0
+drift   = { dist = "normal", mean = 0.09067208228232437, std = 0.009324496855838527 }
+sigma   = { dist = "lognormal", mu = -1.929739, sigma = 0.697936 }
+
+[products.bot1]
+bid_rule = "ceil_fv_minus_offset"
+ask_rule = "floor_fv_plus_offset"
+offset   = 10.0
+volume   = { dist = "uniform_int", lo = 15, hi = 25 }
+
+[products.bot2]
+bid_rule = "ceil_fv_minus_offset"
+ask_rule = "floor_fv_plus_offset"
+offset   = 7.0
+volume   = { dist = "uniform_int", lo = 8, hi = 12 }
+presence_rate = 0.961
+
+[products.bot3]
+presence_rate       = { dist = "beta", alpha = 49, beta = 952 }
+side_bid_prob       = 0.429
+price_delta_support = [-5, -4, -3, 0, 2, 3, 4]
+crossing_volume     = { dist = "uniform_int", lo = 3, hi = 8 }
+passive_volume      = { dist = "uniform_int", lo = 5, hi = 13 }
+
+[products.taker]
+trade_active_prob = { dist = "beta", alpha = 1012, beta = 28990 }
+second_trade_prob = { dist = "beta", alpha = 40, beta = 934 }
+buy_prob          = { dist = "beta", alpha = 1, beta = 1 }

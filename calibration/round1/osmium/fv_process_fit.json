@@ -1,0 +1,86 @@
+{
+  "product": "ASH_COATED_OSMIUM",
+  "model": "mean_revert_ou",
+  "params": {
+    "center": 9999.249510054808,
+    "kappa": 0.039198484963723634,
+    "sigma": 0.4429519056462077,
+    "initial": 10011.0
+  },
+  "aic": 817.0142784369084,
+  "held_out_ll": -113.09376027095688,
+  "residual_ljung_box_p": 0.2837405404927742,
+  "all_aic": {
+    "fixed": 2960.449049723915,
+    "drifting_walk": 839.8165256449877,
+    "mean_revert_ou": 817.0142784369084
+  },
+  "all_held_out_ll": {
+    "fixed": -717.9792001955319,
+    "drifting_walk": -113.11476079201151,
+    "mean_revert_ou": -113.09376027095688
+  },
+  "all_ljung_box_p": {
+    "fixed": 0.0,
+    "drifting_walk": 0.8773046846324891,
+    "mean_revert_ou": 0.2837405404927742
+  },
+  "posterior": {
+    "center": {
+      "mean": 9999.226068433003,
+      "std": 0.4453582709020528
+    },
+    "kappa": {
+      "mean": 0.04106113857766725,
+      "std": 0.008773541166279441
+    },
+    "sigma": {
+      "mean": 0.43468263296729254,
+      "std": 0.10168775265837762
+    },
+    "initial": {
+      "mean": 10011.0,
+      "std": 0.0
+    }
+  },
+  "historical_mid_crosscheck": {
+    "-2": {
+      "model": "mean_revert_ou",
+      "params": {
+        "center": 9998.164034121446,
+        "kappa": 0.2607647075856029,
+        "sigma": 3.5135116025741473,
+        "initial": 10010.0
+      },
+      "all_aic": {
+        "fixed": 61320.81880203219,
+        "drifting_walk": 54811.0294952127,
+        "mean_revert_ou": 53417.41947063174
+      },
+      "ljung_box_p": 0.0,
+      "n": 9982,
+      "mean": 9998.169905830495,
+      "std": 5.219652724594398
+    },
+    "-1": {
+      "model": "mean_revert_ou",
+      "params": {
+        "center": 10000.833564179939,
+        "kappa": 0.3493625729203708,
+        "sigma": 3.37925209885777,
+        "initial": 10003.0
+      },
+      "all_aic": {
+        "fixed": 58141.051726198624,
+        "drifting_walk": 54559.39327956877,
+        "mean_revert_ou": 52644.94156771395
+      },
+      "ljung_box_p": 0.0,
+      "n": 9983,
+      "mean": 10000.833967745168,
+      "std": 4.4498220989352015
+    }
+  },
+  "train_n": 670,
+  "heldout_n": 330
+}

@@ -50,6 +50,8 @@ prosperity3bt = ["resources/*/*.csv"]
 dev-dependencies = [
     "mypy>=1.15.0",
     "ruff>=0.9.7",
+    "pytest>=8.0",
+    "scipy>=1.11",
 ]
 
 [tool.ruff]
@@ -64,3 +66,7 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = "prosperity3bt.datamodel"
 ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "../calibration"]
+python_files = ["test_*.py"]

@@ -1,4 +1,5 @@
 import sys
+import warnings
 from importlib import metadata
 from pathlib import Path
 from typing import Annotated, Optional
@@ -20,6 +21,10 @@ def version_callback(value: bool) -> None:
 
 
 app = Typer(context_settings={"help_option_names": ["--help", "-h"]})
+
+
+# repo root: backtester/prosperity4mcbt/__main__.py -> backtester -> repo
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 @app.command()
@@ -65,9 +70,6 @@ def cli(
         Option("--heavy", help="Preset for a full run: 1000 sessions and 100 sample sessions."),
     ] = False,
     sessions: Annotated[int, Option("--sessions", help="Number of Monte Carlo sessions to run.")] = 100,
-    fv_mode: Annotated[str, Option("--fv-mode", help="Fair-value mode for the Rust simulator.")] = "simulate",
-    trade_mode: Annotated[str, Option("--trade-mode", help="Trade-arrival mode for the Rust simulator.")] = "simulate",
-    tomato_support: Annotated[str, Option("--tomato-support", help="Latent fair support for tomatoes in simulate mode.")] = "quarter",
     seed: Annotated[int, Option("--seed", help="RNG seed for the Rust simulator.")] = 20260401,
     python_bin: Annotated[
         str,
@@ -77,6 +79,22 @@ def cli(
         int,
         Option("--sample-sessions", help="Number of sessions to persist with full path/trace data for dashboard charts."),
     ] = 10,
+    round_arg: Annotated[
+        Optional[int],
+        Option("--round", help="Which round config to load (selects configs/round{N}.toml). Defaults to tutorial."),
+    ] = None,
+    config_arg: Annotated[
+        Optional[Path],
+        Option("--config", help="Explicit TOML config path override."),
+    ] = None,
+    dro: Annotated[bool, Option("--dro", help="Enable DRO (worst-case) evaluation.")] = False,
+    dro_radius: Annotated[float, Option("--dro-radius", help="DRO posterior widening multiplier.")] = 2.0,
+    dro_k: Annotated[int, Option("--dro-k", help="Number of adversarial draws per session.")] = 8,
+    fixed_params: Annotated[bool, Option("--fixed-params", help="Disable posterior sampling; use point estimates.")] = False,
+    # legacy flags (no-ops; accepted for backcompat)
+    fv_mode: Annotated[str, Option("--fv-mode", help="[deprecated] Fair-value mode (now set in TOML config).", hidden=True)] = "simulate",
+    trade_mode: Annotated[str, Option("--trade-mode", help="[deprecated] Trade-arrival mode (now set in TOML config).", hidden=True)] = "simulate",
+    tomato_support: Annotated[str, Option("--tomato-support", help="[deprecated] Tomato latent support (now set in TOML config).", hidden=True)] = "quarter",
     version: Annotated[
         bool,
         Option("--version", "-v", help="Show the program's version number and exit.", is_eager=True, callback=version_callback),
@@ -89,6 +107,13 @@ def cli(
         print("Error: --quick and --heavy are mutually exclusive")
         raise SystemExit(1)
 
+    if fv_mode != "simulate":
+        warnings.warn("--fv-mode is deprecated; configure via TOML config instead", DeprecationWarning, stacklevel=2)
+    if trade_mode != "simulate":
+        warnings.warn("--trade-mode is deprecated; configure via TOML config instead", DeprecationWarning, stacklevel=2)
+    if tomato_support != "quarter":
+        warnings.warn("--tomato-support is deprecated; configure via TOML config instead", DeprecationWarning, stacklevel=2)
+
     if quick:
         sessions = 100
         sample_sessions = 10
@@ -96,19 +121,33 @@ def cli(
         sessions = 1000
         sample_sessions = 100
 
+    # resolve config path
+    if config_arg is not None:
+        config_path = config_arg
+    elif round_arg is not None:
+        config_path = _REPO_ROOT / "configs" / f"round{round_arg}.toml"
+    else:
+        config_path = _REPO_ROOT / "configs" / "tutorial.toml"
+
+    if not config_path.exists():
+        print(f"Error: config not found at {config_path}")
+        raise SystemExit(1)
+
     dashboard_path = normalize_dashboard_path(out, False) or default_dashboard_path()
 
     dashboard = run_monte_carlo_mode(
         algorithm=algorithm,
         dashboard_path=dashboard_path,
         data_root=data,
+        config_path=config_path,
         sessions=sessions,
-        fv_mode=fv_mode,
-        trade_mode=trade_mode,
-        tomato_support=tomato_support,
         seed=seed,
         python_bin=python_bin,
         sample_sessions=sample_sessions,
+        dro=dro,
+        dro_radius=dro_radius,
+        dro_k=dro_k,
+        fixed_params=fixed_params,
     )
 
     total_stats = dashboard["overall"]["totalPnl"]

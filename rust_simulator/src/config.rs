@@ -140,7 +140,63 @@ pub enum ParametricDist {
     Beta { alpha: f64, beta: f64 },
 }
 
+impl Distribution {
+    pub fn point_estimate(&self) -> f64 {
+        match self {
+            Distribution::Fixed(x) => *x,
+            Distribution::Parametric(p) => p.point_estimate(),
+        }
+    }
+}
+
+impl ParametricDist {
+    pub fn point_estimate(&self) -> f64 {
+        match self {
+            ParametricDist::Normal { mean, .. } => *mean,
+            ParametricDist::Lognormal { mu, sigma } => (mu + 0.5 * sigma * sigma).exp(),
+            ParametricDist::UniformInt { lo, hi } => ((lo + hi) as f64) / 2.0,
+            ParametricDist::UniformFloat { lo, hi } => (lo + hi) / 2.0,
+            ParametricDist::Beta { alpha, beta } => alpha / (alpha + beta),
+        }
+    }
+}
+
 impl ProductConfig {
+    /// Point-estimate version of sample_from_posterior. Used by --fixed-params.
+    pub fn to_point_estimate(&self) -> SampledProductParams {
+        let (b1_lo, b1_hi) = point_estimate_uniform_int(&self.bot1.volume);
+        let (b2_lo, b2_hi) = point_estimate_uniform_int(&self.bot2.volume);
+        let (b3x_lo, b3x_hi) = point_estimate_uniform_int(&self.bot3.crossing_volume);
+        let (b3p_lo, b3p_hi) = point_estimate_uniform_int(&self.bot3.passive_volume);
+        SampledProductParams {
+            name: self.name.clone(),
+            position_limit: self.position_limit,
+            fv_process: point_estimate_fv(&self.fv_process),
+            bot1_offset: self.bot1.offset.point_estimate(),
+            bot1_volume_lo: b1_lo,
+            bot1_volume_hi: b1_hi,
+            bot1_presence: self.bot1.presence_rate.point_estimate().clamp(0.0, 1.0),
+            bot1_bid_rule: self.bot1.bid_rule.clone(),
+            bot1_ask_rule: self.bot1.ask_rule.clone(),
+            bot2_offset: self.bot2.offset.point_estimate(),
+            bot2_volume_lo: b2_lo,
+            bot2_volume_hi: b2_hi,
+            bot2_presence: self.bot2.presence_rate.point_estimate().clamp(0.0, 1.0),
+            bot2_bid_rule: self.bot2.bid_rule.clone(),
+            bot2_ask_rule: self.bot2.ask_rule.clone(),
+            bot3_presence: self.bot3.presence_rate.point_estimate().clamp(0.0, 1.0),
+            bot3_side_bid_prob: self.bot3.side_bid_prob.point_estimate().clamp(0.0, 1.0),
+            bot3_price_delta_support: self.bot3.price_delta_support.clone(),
+            bot3_crossing_volume_lo: b3x_lo,
+            bot3_crossing_volume_hi: b3x_hi,
+            bot3_passive_volume_lo: b3p_lo,
+            bot3_passive_volume_hi: b3p_hi,
+            taker_trade_active_prob: self.taker.trade_active_prob.point_estimate().clamp(0.0, 1.0),
+            taker_second_trade_prob: self.taker.second_trade_prob.point_estimate().clamp(0.0, 1.0),
+            taker_buy_prob: self.taker.buy_prob.point_estimate().clamp(0.0, 1.0),
+        }
+    }
+
     pub fn sample_from_posterior<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> SampledProductParams {
         let (b1_lo, b1_hi) = sample_uniform_int_pair(&self.bot1.volume, rng);
         let (b2_lo, b2_hi) = sample_uniform_int_pair(&self.bot2.volume, rng);
@@ -176,6 +232,73 @@ impl ProductConfig {
     }
 }
 
+impl ProductConfig {
+    /// Returns a copy with each parametric distribution's std scaled up by
+    /// `sqrt(1 + radius^2)`. Fixed scalars are unchanged.
+    pub fn widen_posterior(&self, radius: f64) -> Self {
+        let factor = (1.0 + radius * radius).sqrt();
+        let mut w = self.clone();
+        w.fv_process = widen_fv(&w.fv_process, factor);
+        w.bot1.offset = widen_dist(&w.bot1.offset, factor);
+        w.bot1.volume = widen_dist(&w.bot1.volume, factor);
+        w.bot1.presence_rate = widen_dist(&w.bot1.presence_rate, factor);
+        w.bot2.offset = widen_dist(&w.bot2.offset, factor);
+        w.bot2.volume = widen_dist(&w.bot2.volume, factor);
+        w.bot2.presence_rate = widen_dist(&w.bot2.presence_rate, factor);
+        w.bot3.presence_rate = widen_dist(&w.bot3.presence_rate, factor);
+        w.bot3.side_bid_prob = widen_dist(&w.bot3.side_bid_prob, factor);
+        w.bot3.crossing_volume = widen_dist(&w.bot3.crossing_volume, factor);
+        w.bot3.passive_volume = widen_dist(&w.bot3.passive_volume, factor);
+        w.taker.trade_active_prob = widen_dist(&w.taker.trade_active_prob, factor);
+        w.taker.second_trade_prob = widen_dist(&w.taker.second_trade_prob, factor);
+        w.taker.buy_prob = widen_dist(&w.taker.buy_prob, factor);
+        w
+    }
+}
+
+fn widen_fv(fv: &FairValueModel, factor: f64) -> FairValueModel {
+    match fv {
+        FairValueModel::Fixed { price } => FairValueModel::Fixed { price: widen_dist(price, factor) },
+        FairValueModel::DriftingWalk { initial, drift, sigma } => FairValueModel::DriftingWalk {
+            initial: initial.clone(),
+            drift: widen_dist(drift, factor),
+            sigma: widen_dist(sigma, factor),
+        },
+        FairValueModel::MeanRevertOU { center, kappa, sigma } => FairValueModel::MeanRevertOU {
+            center: center.clone(),
+            kappa: widen_dist(kappa, factor),
+            sigma: widen_dist(sigma, factor),
+        },
+    }
+}
+
+fn widen_dist(d: &Distribution, factor: f64) -> Distribution {
+    match d {
+        Distribution::Fixed(x) => Distribution::Fixed(*x),
+        Distribution::Parametric(p) => Distribution::Parametric(match p {
+            ParametricDist::Normal { mean, std } => ParametricDist::Normal { mean: *mean, std: std * factor },
+            ParametricDist::Lognormal { mu, sigma } => ParametricDist::Lognormal { mu: *mu, sigma: sigma * factor },
+            ParametricDist::UniformInt { lo, hi } => {
+                let m = ((lo + hi) as f64) / 2.0;
+                let half = ((hi - lo) as f64) / 2.0 * factor;
+                ParametricDist::UniformInt { lo: (m - half).round() as i64, hi: (m + half).round() as i64 }
+            }
+            ParametricDist::UniformFloat { lo, hi } => {
+                let m = (lo + hi) / 2.0;
+                let half = (hi - lo) / 2.0 * factor;
+                ParametricDist::UniformFloat { lo: m - half, hi: m + half }
+            }
+            ParametricDist::Beta { alpha, beta } => {
+                // preserve mean, widen variance by scaling precision by 1/factor^2
+                let mean = alpha / (alpha + beta);
+                let precision = alpha + beta;
+                let new_precision = (precision / (factor * factor)).max(0.1);
+                ParametricDist::Beta { alpha: mean * new_precision, beta: (1.0 - mean) * new_precision }
+            }
+        }),
+    }
+}
+
 fn sample_fv<R: rand::Rng + ?Sized>(fv: &FairValueModel, rng: &mut R) -> SampledFvProcess {
     match fv {
         FairValueModel::Fixed { price } => SampledFvProcess::Fixed { price: price.sample(rng) },
@@ -201,6 +324,32 @@ fn sample_uniform_int_pair<R: rand::Rng + ?Sized>(d: &Distribution, rng: &mut R)
             let a = other.sample_int(rng);
             let b = other.sample_int(rng);
             (a.min(b), a.max(b))
+        }
+    }
+}
+
+fn point_estimate_fv(fv: &FairValueModel) -> SampledFvProcess {
+    match fv {
+        FairValueModel::Fixed { price } => SampledFvProcess::Fixed { price: price.point_estimate() },
+        FairValueModel::DriftingWalk { initial, drift, sigma } => SampledFvProcess::DriftingWalk {
+            initial: initial.point_estimate(),
+            drift: drift.point_estimate(),
+            sigma: sigma.point_estimate().max(1e-9),
+        },
+        FairValueModel::MeanRevertOU { center, kappa, sigma } => SampledFvProcess::MeanRevertOU {
+            center: center.point_estimate(),
+            kappa: kappa.point_estimate().max(0.0),
+            sigma: sigma.point_estimate().max(1e-9),
+        },
+    }
+}
+
+fn point_estimate_uniform_int(d: &Distribution) -> (i64, i64) {
+    match d {
+        Distribution::Parametric(ParametricDist::UniformInt { lo, hi }) => (*lo, *hi),
+        other => {
+            let m = other.point_estimate().round() as i64;
+            (m, m)
         }
     }
 }
