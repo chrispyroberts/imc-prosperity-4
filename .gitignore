@@ -35,6 +35,8 @@ visualizer/dist/
 
 rust_simulator/target/
 
+.worktrees/
+
 *.log
 
 # Keep private local strategy/research tooling out of the public repo

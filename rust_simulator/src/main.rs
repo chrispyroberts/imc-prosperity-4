@@ -12,6 +12,10 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
+pub mod config;
+mod posterior;
+mod products;
+
 const DAYS: [i32; 2] = [-2, -1];
 const PRODUCTS: [&str; 2] = ["EMERALDS", "TOMATOES"];
 const DEFAULT_TICKS_PER_DAY: usize = 10_000;

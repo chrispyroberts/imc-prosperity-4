@@ -1,0 +1,70 @@
+[meta]
+round = 0
+ticks_per_day = 10000
+shared_position_limit = 80
+
+[[products]]
+name = "EMERALDS"
+position_limit = 80
+
+[products.fv_process]
+model = "fixed"
+price = 10000.0
+
+[products.bot1]
+bid_rule = "round_fv_minus_offset"
+ask_rule = "round_fv_plus_offset"
+offset   = 10.0
+volume   = { dist = "uniform_int", lo = 20, hi = 30 }
+
+[products.bot2]
+bid_rule = "round_fv_minus_offset"
+ask_rule = "round_fv_plus_offset"
+offset   = 8.0
+volume   = { dist = "uniform_int", lo = 8, hi = 12 }
+
+[products.bot3]
+presence_rate       = { dist = "beta", alpha = 1, beta = 99 }
+side_bid_prob       = 0.5
+price_delta_support = [-1, 0, 1]
+crossing_volume     = { dist = "uniform_int", lo = 3, hi = 8 }
+passive_volume      = { dist = "uniform_int", lo = 2, hi = 5 }
+
+[products.taker]
+trade_active_prob = { dist = "beta", alpha = 399, beta = 19601 }
+second_trade_prob = 0.0
+buy_prob          = { dist = "beta", alpha = 195, beta = 204 }
+
+[[products]]
+name = "TOMATOES"
+position_limit = 80
+
+[products.fv_process]
+model = "drifting_walk"
+initial = 10000.0
+drift   = 0.0
+sigma   = { dist = "lognormal", mu = -0.7, sigma = 0.05 }
+
+[products.bot1]
+bid_rule = "round_fv_minus_offset"
+ask_rule = "round_fv_plus_offset"
+offset   = 8.0
+volume   = { dist = "uniform_int", lo = 15, hi = 25 }
+
+[products.bot2]
+bid_rule = "floor_fv_plus_0_75_minus_offset"
+ask_rule = "ceil_fv_plus_0_25_plus_offset"
+offset   = 7.0
+volume   = { dist = "uniform_int", lo = 5, hi = 10 }
+
+[products.bot3]
+presence_rate       = { dist = "beta", alpha = 126, beta = 1873 }
+side_bid_prob       = 0.46
+price_delta_support = [-2, -1, 0, 1]
+crossing_volume     = { dist = "uniform_int", lo = 5, hi = 12 }
+passive_volume      = { dist = "uniform_int", lo = 2, hi = 6 }
+
+[products.taker]
+trade_active_prob = { dist = "beta", alpha = 819, beta = 19181 }
+second_trade_prob = { dist = "beta", alpha = 1, beta = 818 }
+buy_prob          = { dist = "beta", alpha = 387, beta = 433 }
