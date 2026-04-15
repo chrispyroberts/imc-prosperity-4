@@ -467,10 +467,15 @@ def load_sample_session(session_dir: Path) -> dict[str, Any]:
             "mtmPnl": trace["mtmPnl"],
         }
 
-    timestamps = products["EMERALDS"]["timestamps"]
-    total_pnl = []
-    for idx in range(len(timestamps)):
-        total_pnl.append(sum(products[product]["mtmPnl"][idx] for product in products))
+    if not products:
+        timestamps = []
+        total_pnl = []
+    else:
+        first_product = next(iter(products))
+        timestamps = products[first_product]["timestamps"]
+        total_pnl = []
+        for idx in range(len(timestamps)):
+            total_pnl.append(sum(products[product]["mtmPnl"][idx] for product in products))
 
     return {
         "sessionId": int(session_dir.name.split("_")[-1]),
@@ -708,17 +713,18 @@ def write_static_chart_svgs(output_dir: Path, sampled_paths: list[dict[str, Any]
     charts_dir = output_dir / "static_charts"
     charts_dir.mkdir(parents=True, exist_ok=True)
 
+    # build specs dynamically per product seen in the first sampled path
+    product_names = list(sampled_paths[0].get("products", {}).keys())
     chart_specs = {
-        "EMERALDS": [
-            ("fair_bands", "Fair Price Bands", lambda path: path["products"]["EMERALDS"]["fair"]),
-            ("mtm_bands", "MTM PnL Bands", lambda path: path["products"]["EMERALDS"]["mtmPnl"]),
-            ("position_bands", "Position Bands", lambda path: path["products"]["EMERALDS"]["position"]),
-        ],
-        "TOMATOES": [
-            ("fair_bands", "Fair Price Bands", lambda path: path["products"]["TOMATOES"]["fair"]),
-            ("mtm_bands", "MTM PnL Bands", lambda path: path["products"]["TOMATOES"]["mtmPnl"]),
-            ("position_bands", "Position Bands", lambda path: path["products"]["TOMATOES"]["position"]),
-        ],
+        product: [
+            ("fair_bands", "Fair Price Bands",
+             lambda path, p=product: path["products"][p]["fair"]),
+            ("mtm_bands", "MTM PnL Bands",
+             lambda path, p=product: path["products"][p]["mtmPnl"]),
+            ("position_bands", "Position Bands",
+             lambda path, p=product: path["products"][p]["position"]),
+        ]
+        for product in product_names
     }
 
     refs: dict[str, list[dict[str, str]]] = {}
@@ -749,17 +755,14 @@ def build_band_series(sampled_paths: list[dict[str, Any]]) -> dict[str, dict[str
     if not sampled_paths:
         return {}
 
+    product_names = list(sampled_paths[0].get("products", {}).keys())
     return {
-        "EMERALDS": {
-            "fair": mean_std_band_series(sampled_paths, lambda path: path["products"]["EMERALDS"]["fair"]),
-            "mtmPnl": mean_std_band_series(sampled_paths, lambda path: path["products"]["EMERALDS"]["mtmPnl"]),
-            "position": mean_std_band_series(sampled_paths, lambda path: path["products"]["EMERALDS"]["position"]),
-        },
-        "TOMATOES": {
-            "fair": mean_std_band_series(sampled_paths, lambda path: path["products"]["TOMATOES"]["fair"]),
-            "mtmPnl": mean_std_band_series(sampled_paths, lambda path: path["products"]["TOMATOES"]["mtmPnl"]),
-            "position": mean_std_band_series(sampled_paths, lambda path: path["products"]["TOMATOES"]["position"]),
-        },
+        product: {
+            "fair": mean_std_band_series(sampled_paths, lambda path, p=product: path["products"][p]["fair"]),
+            "mtmPnl": mean_std_band_series(sampled_paths, lambda path, p=product: path["products"][p]["mtmPnl"]),
+            "position": mean_std_band_series(sampled_paths, lambda path, p=product: path["products"][p]["position"]),
+        }
+        for product in product_names
     }
 
 
